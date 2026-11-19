@@ -1,0 +1,24 @@
+# Build artifacts
+*.obj
+*.ilk
+*.pdb
+*.exe
+*.cab
+*.msu
+*.dll
+**/obj/
+**/build/
+
+# External projects / reference trees (kept locally, not tracked)
+/go-ntfs/
+/ms-compress/
+/mscompress-expand/
+/paq/
+/wimlib-1.14.5/
+/wine-mspatcha/
+
+# Local test outputs
+recon/testdata/oracle/
+recon/testdata/dnative.dll
+
+recon/private/
