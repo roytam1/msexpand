@@ -918,3 +918,20 @@ Phase D is the genuine open-ended piece.
     PA19, XPRESS, LZX and LZMS suites still pass.  Later blobs in the chain
     (e.g. wusettingsprovider.dll) still need the OS path; their rift tables
     are not yet parsed correctly.
+
+    **Compo port, part 24 (pre-blob target info).**  The next chained delta
+    (wusettingsprovider.dll) has header flags 0x6621FF (E8, MARK, IMPORTS,
+    EXPORTS, RESOURCES, RELOCS, I386 JMPS/CALLS, UNBIND) and a 328-byte
+    `pre` blob, so the encoder normalized the old PE image before patching.
+    `PortableExecutableInfo::InternalFromBitReader` (`msdelta.dll.c:19685`)
+    shows the pre blob starts with a 64-bit target ImageBase, a 32-bit
+    GlobalPointer and a 32-bit TimeStamp, followed by a RiftTable and CLI
+    metadata, then the compression RiftTable and CliMap.  For this blob the
+    values are ImageBase 0x80000000, GlobalPointer 0, TimeStamp 0x9A25E508
+    (a stub-PE target, not the real DLL's 0x10000000 / 0x5344BCA1).
+
+    Applying our PA19 `PeFixPrepareSeed()` to the source with either base and
+    timestamp pair still does not make the delta decode: the pre-blob RiftTable
+    must also drive the transform, and our PA19 transform module expects a
+    different option-flag mapping.  The committed state is unchanged; real
+    deltas beyond the first continue to use `msdelta.dll`.
