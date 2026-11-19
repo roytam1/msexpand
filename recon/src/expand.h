@@ -56,6 +56,7 @@
 #define MSG_ADDING_QUEUE       38
 #define MSG_PROGRESS           39
 #define MSG_ERROR_DESC         40
+#define MSG_SFX_VERIFY_FAIL    41
 
 /* ------------------------------------------------------------------ */
 /* Global program state (addresses in comments are from the IDB)       */

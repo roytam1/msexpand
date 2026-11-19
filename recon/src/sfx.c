@@ -8,10 +8,14 @@
  */
 #include "expand.h"
 #include "delta.h"
+#include "hash.h"
 #include "sfx.h"
 
-#define SFX_MAX_DELTA 64
-#define SFX_MAX_COPY  32
+#define SFX_MAX_DELTA  64
+#define SFX_MAX_COPY   32
+#define SFX_MAX_VERIFY 64
+#define SFX_MAX_DELETE 32
+#define SFX_MAX_WRITTEN 256
 
 /* ---------- small helpers ------------------------------------------------ */
 
@@ -114,6 +118,62 @@ static int SfxCopyFile(const char *src, const char *dst)
     fclose(a);
     fclose(b);
     return 0;
+}
+
+/* ---------- manifest helper routines ------------------------------------ */
+
+typedef struct tagSFXWRITTEN
+{
+    char rel[MAX_PATH];
+} SFXWRITTEN;
+
+static void SfxHexOf(const unsigned char *b, int n, char *out)
+{
+    static const char hx[] = "0123456789ABCDEF";
+    int i;
+    for (i = 0; i < n; ++i)
+    {
+        out[i * 2] = hx[b[i] >> 4];
+        out[i * 2 + 1] = hx[b[i] & 15];
+    }
+    out[n * 2] = 0;
+}
+
+/* Read a bare (unquoted) token up to the end of the line. */
+static void SfxReadToken(char **pp, char *out, size_t cap)
+{
+    char *p = *pp;
+    size_t n = 0;
+
+    while (*p == ' ' || *p == '\t')
+        ++p;
+    while (*p && *p != '"')
+    {
+        if (n + 1 < cap)
+            out[n++] = *p;
+        ++p;
+    }
+    while (n > 0 && (out[n - 1] == ' ' || out[n - 1] == '\t'))
+        --n;
+    out[n] = 0;
+    *pp = p;
+}
+
+/* Remember a file this run wrote, so [Delete] only removes our own
+ * artifacts rather than unrelated files that happen to match a pattern. */
+static void SfxTrack(SFXWRITTEN *w, int *n, int cap, const char *rel)
+{
+    int i;
+    if (*n >= cap || !rel || !*rel)
+        return;
+    for (i = 0; i < *n; ++i)
+    {
+        if (_stricmp(w[i].rel, rel) == 0)
+            return;
+    }
+    strncpy(w[*n].rel, rel, MAX_PATH - 1);
+    w[*n].rel[MAX_PATH - 1] = 0;
+    ++*n;
 }
 
 /* ---------- CAB / SFX detection ------------------------------------------ */
@@ -255,15 +315,69 @@ static void SfxParseManifest(SFX *sfx)
                 section = 1;
             else if (_strnicmp(line, "[Copy]", 6) == 0)
                 section = 2;
+            else if (_strnicmp(line, "[Verify]", 8) == 0)
+                section = 3;
+            else if (_strnicmp(line, "[Delete]", 8) == 0)
+                section = 4;
             else
                 section = 0;
             continue;
         }
-        if (!*line || *line == ';' || !strchr(line, '='))
+        if (!*line || *line == ';')
+            continue;
+
+        /* [Delete] lines carry a single quoted pattern and no '='. */
+        if (section == 4)
+        {
+            q = line;
+            if (SfxNextQuoted(&q, a, sizeof(a)) &&
+                sfx->nDelete < SFX_MAX_DELETE)
+            {
+                strncpy(sfx->del[sfx->nDelete].pattern, a, MAX_PATH - 1);
+                sfx->del[sfx->nDelete].pattern[MAX_PATH - 1] = 0;
+                ++sfx->nDelete;
+            }
+            continue;
+        }
+
+        if (!strchr(line, '='))
             continue;
         q = line;
-        if (!SfxNextQuoted(&q, a, sizeof(a)) ||
-            !SfxNextQuoted(&q, b, sizeof(b)))
+        if (!SfxNextQuoted(&q, a, sizeof(a)))
+            continue;
+
+        /* [Verify] "target" = <32 hex digits>.  The hash is unquoted in
+         * the real manifests; accept a quoted value as well.  Anything
+         * that is not 16 bytes (MD5) is ignored. */
+        if (section == 3)
+        {
+            unsigned char hb[16];
+            if (sfx->nVerify >= SFX_MAX_VERIFY)
+                continue;
+            while (*q && *q != '=')
+                ++q;
+            if (!*q)
+                continue;
+            ++q;
+            if (*q == '"')
+            {
+                if (!SfxNextQuoted(&q, b, sizeof(b)))
+                    continue;
+            }
+            else
+            {
+                SfxReadToken(&q, b, sizeof(b));
+            }
+            if (HexToBytes(b, hb, (int)sizeof(hb)) != (int)sizeof(hb))
+                continue;
+            strncpy(sfx->verify[sfx->nVerify].target, a, MAX_PATH - 1);
+            sfx->verify[sfx->nVerify].target[MAX_PATH - 1] = 0;
+            SfxHexOf(hb, (int)sizeof(hb), sfx->verify[sfx->nVerify].hash);
+            ++sfx->nVerify;
+            continue;
+        }
+
+        if (!SfxNextQuoted(&q, b, sizeof(b)))
             continue;
         if (section == 1 && sfx->nDelta < SFX_MAX_DELTA)
         {
@@ -385,6 +499,68 @@ static int SfxEntrySelected(const char *entry, const char *base)
     return PatternMatch(base, g_pszSelectiveSpec, wildcardExt);
 }
 
+/* Check the MD5 of every [Verify] target that was actually produced.
+ * Files skipped by -F: selection are simply not present, so ignore them. */
+static int SfxVerifyOutputs(SFX *sfx, const char *targetDir)
+{
+    int i;
+    int bad = 0;
+
+    for (i = 0; i < sfx->nVerify; ++i)
+    {
+        SFXVERIFY *v = &sfx->verify[i];
+        char path[MAX_PATH];
+        unsigned char *data = NULL;
+        unsigned long len = 0;
+        unsigned char digest[16];
+        char got[33];
+
+        JoinPath(path, sizeof(path), targetDir, v->target);
+        if (_access(path, 0) != 0)
+            continue;
+        if (SfxReadFile(path, &data, &len) != 0)
+        {
+            bad = 1;
+            continue;
+        }
+        Md5(data, len, digest);
+        free(data);
+        SfxHexOf(digest, (int)sizeof(digest), got);
+        if (_stricmp(got, v->hash) != 0)
+        {
+            PrintMsg(MSG_SFX_VERIFY_FAIL, v->target, got, v->hash);
+            bad = 1;
+        }
+    }
+    return bad ? -1 : 0;
+}
+
+/* Honour the manifest's [Delete] list.  Only files written during this run
+ * are candidates, so a pattern such as "*._p" cannot remove unrelated
+ * files that were already in the destination directory. */
+static void SfxDeleteArtifacts(SFX *sfx, const char *targetDir,
+                               SFXWRITTEN *written, int nWritten)
+{
+    int i, k;
+
+    for (i = 0; i < nWritten; ++i)
+    {
+        for (k = 0; k < sfx->nDelete; ++k)
+        {
+            const char *pat = sfx->del[k].pattern;
+            if (!PatternMatch(written[i].rel, pat, 1) &&
+                !PatternMatch(OnlyFileName(written[i].rel), pat, 1))
+                continue;
+            {
+                char full[MAX_PATH];
+                JoinPath(full, sizeof(full), targetDir, written[i].rel);
+                _unlink(full);
+            }
+            break;
+        }
+    }
+}
+
 int SfxExpandFile(SFX *sfx, const char *destDir)
 {
     char targetDir[MAX_PATH];
@@ -398,6 +574,8 @@ int SfxExpandFile(SFX *sfx, const char *destDir)
     unsigned char *source = NULL;
     unsigned char *result = NULL;
     unsigned long patchLen, sourceLen, resultLen;
+    SFXWRITTEN written[SFX_MAX_WRITTEN];
+    int nWritten = 0;
     int count;
     int nSel = 0;
     int failed = 0;
@@ -449,6 +627,7 @@ int SfxExpandFile(SFX *sfx, const char *destDir)
             continue;
         }
         PrintMsg(MSG_EXPANDING, sfx->inputPath, target);
+        SfxTrack(written, &nWritten, SFX_MAX_WRITTEN, entry);
         sel[i] = 1;
         ++nSel;
         ++g_nLocalFiles;
@@ -489,6 +668,7 @@ int SfxExpandFile(SFX *sfx, const char *destDir)
                 failed = 1;
                 continue;
             }
+            SfxTrack(written, &nWritten, SFX_MAX_WRITTEN, d->patch);
         }
         if (_access(srcPath, 0) != 0)
         {
@@ -498,6 +678,7 @@ int SfxExpandFile(SFX *sfx, const char *destDir)
                 failed = 1;
                 continue;
             }
+            SfxTrack(written, &nWritten, SFX_MAX_WRITTEN, d->source);
         }
         if (SfxReadFile(patchPath, &patch, &patchLen) != 0 ||
             SfxReadFile(srcPath, &source, &sourceLen) != 0)
@@ -524,6 +705,7 @@ int SfxExpandFile(SFX *sfx, const char *destDir)
         if (SfxWriteFile(target, result, resultLen) != 0)
             failed = 1;
         PrintMsg(MSG_EXPANDING, sfx->inputPath, target);
+        SfxTrack(written, &nWritten, SFX_MAX_WRITTEN, d->target);
         free(result);
         result = NULL;
         ++g_nLocalFiles;
@@ -549,11 +731,17 @@ int SfxExpandFile(SFX *sfx, const char *destDir)
                 failed = 1;
                 continue;
             }
+            SfxTrack(written, &nWritten, SFX_MAX_WRITTEN, cp->source);
         }
         if (SfxCopyFile(from, to) != 0)
             failed = 1;
         PrintMsg(MSG_COPYING, sfx->inputPath, to);
+        SfxTrack(written, &nWritten, SFX_MAX_WRITTEN, cp->target);
     }
+
+    if (SfxVerifyOutputs(sfx, targetDir) != 0)
+        failed = 1;
+    SfxDeleteArtifacts(sfx, targetDir, written, nWritten);
 
     free(sel);
     if (failed)

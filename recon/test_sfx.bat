@@ -26,6 +26,9 @@ for %%P in (browseui cdfview danim dxtmsft dxtrans iepeers inseng jsproxy mshtml
 )
 fc /b "testdata\sfxout\RTMQFE\tdc.ocx" "%GOLD%\tdc.ocx" >NUL
 if errorlevel 1 set BAD=1
+rem [Delete] is applied by the run: the patch files and the stub DLL must be gone.
+for /f %%A in ('dir /b /s /a-d testdata\sfxout\*._p 2^>NUL') do set BAD=1
+if exist "testdata\sfxout\_sfx_.dll" set BAD=1
 if "%BAD%"=="1" goto :fail
 echo === SFX tests done ===
 popd

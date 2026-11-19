@@ -60,7 +60,14 @@ needed ??the CAB reader is compiled into the EXE.
 * **Windows Update SFX packages:** when the input carries an embedded CAB
   with `_sfx_manifest_` and/or `_sfx_.dll`, the CAB is carved out, extracted
   and the manifest's `[Deltas]` are applied with `DeltaApply()`, so patched
-  binaries are written directly. `PA19_NO_OS=1` forces the native decoder.
+  binaries are written directly. The manifest `[Verify]` list is then
+  checked: the MD5 of each produced output (32 hex digits, MD5 only) is
+  compared with the expected hash; a mismatch is reported and fails the run,
+  and files skipped by `-F:` selection are ignored. The `[Delete]` list is
+  then honoured: every file written during the run matching a DOS wildcard
+  pattern (e.g. `*._p`, `_sfx_.dll`) is removed, so the patch files and the
+  stub DLL do not pollute the output tree. `PA19_NO_OS=1` forces the native
+  decoder.
 * **MSU packages with nested cabinets:** an `.msu` outer CAB is extracted,
   any CAB found among its entries is expanded into a directory named after
   that CAB, and a `_manifest_.cix.xml` in it is applied: RAW targets are

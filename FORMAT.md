@@ -436,7 +436,11 @@ and `[Delete]` lists files the stub removes after installing.
 
 `expand_recon.exe` detects this container, carves the CAB to a temporary file,
 extracts it (including LZX folders), applies every manifest delta with
-`DeltaApply()` and honours `[Copy]`, writing patched binaries directly. `-F:`
+`DeltaApply()`, honours `[Copy]`, and finishes with the `[Verify]` and
+`[Delete]` lists: each `[Verify]` target's MD5 is checked against the final
+output (files skipped by `-F:` selection are ignored; a mismatch is reported
+and makes the run fail), and every file written during the run is deleted if
+it matches a `[Delete]` pattern. `-F:`
 selection applies to both CAB entries and delta targets; a selected delta
 target pulls in its patch and source automatically.
 

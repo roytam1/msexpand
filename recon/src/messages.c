@@ -109,7 +109,9 @@ static const MSGENTRY g_Messages[] = {
     { MSG_PROGRESS,
       "Progress: %I64u out of %I64u files" },
     { MSG_ERROR_DESC,
-      "\nError Description: %s\n" }
+      "\nError Description: %s\n" },
+    { MSG_SFX_VERIFY_FAIL,
+      "Verification failed for %s: computed %s, expected %s.\n" }
 };
 
 const char *Msg(int id)

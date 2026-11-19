@@ -21,6 +21,19 @@ typedef struct tagSFXCOPY
     char source[MAX_PATH];
 } SFXCOPY;
 
+/* [Verify] "target" = 32 hex digits (MD5 of the final output). */
+typedef struct tagSFXVERIFY
+{
+    char target[MAX_PATH];
+    char hash[33];
+} SFXVERIFY;
+
+/* [Delete] "pattern" -- DOS wildcards, applied to files this run wrote. */
+typedef struct tagSFXDELETE
+{
+    char pattern[MAX_PATH];
+} SFXDELETE;
+
 typedef struct tagSFX
 {
     char inputPath[MAX_PATH];
@@ -31,6 +44,10 @@ typedef struct tagSFX
     int nDelta;
     SFXCOPY copy[32];
     int nCopy;
+    SFXVERIFY verify[64];
+    int nVerify;
+    SFXDELETE del[32];
+    int nDelete;
     int hasManifest;
 } SFX;
 
