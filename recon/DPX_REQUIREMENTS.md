@@ -880,3 +880,25 @@ Phase D is the genuine open-ended piece.
     re-translate already-translated bytes and made the first divergence move
     backwards, so it was backed out.  Real deltas still use `msdelta.dll`
     delegation; all regression suites pass natively for generated vectors.
+
+    **Compo port, part 22 (header split / rift window / E8).**  Verified the
+    PA30 header against the DLL's `writeVersion/writeCode/writeFlagsInt/
+    writeTargetSize/writeHashAlgId/writeHash` sequence: the first integer is
+    `FileTypeSet` (117 for the real KB2959977 blob), not a version.  The
+    `pre`/`patch` blob split is also correct (`preLen=0`, `patchLen=20529`,
+    patch starts at byte 44), and the patch stream's rift flag is genuinely 0:
+    no alternative leader/bit order yields valid `IntFormat` parameters.
+
+    Two improvements to the native decoder:
+      - A rift match with an empty table uses the identity map over the
+        combined source+output window (source below `srcLen`, already
+        decoded output above it).  This lets the real delta decode to
+        completion instead of failing at position 11696.
+      - DELTA_FLAG_E8 CALL displacements are untranslated in one final pass,
+        subtracting the E8 byte position from small rel32 values only.
+
+    The real delta now produces 49544 bytes but still has 11329 differing
+    bytes, starting at offset 37922 (a long-distance match whose bytes are
+    not present in either the source or earlier output).  Real deltas remain
+    on the byte-exact `msdelta.dll` path; generated vectors and all other
+    regression suites pass natively.

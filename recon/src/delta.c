@@ -649,11 +649,37 @@ static int cf_read_symbol(COMPF *cf, BITR *br, SYMBOL *sym)
     return 0;
 }
 
+/* Reverse DELTA_FLAG_E8 translation once the whole target is decoded. */
+static void e8_untranslate(unsigned char *out, unsigned long outLen)
+{
+    unsigned long i;
+    for (i = 0; i + 4 < outLen; ++i)
+    {
+        unsigned long raw;
+        long rel;
+        if (out[i] != 0xE8)
+            continue;
+        raw = (unsigned long)out[i + 1] |
+              ((unsigned long)out[i + 2] << 8) |
+              ((unsigned long)out[i + 3] << 16) |
+              ((unsigned long)out[i + 4] << 24);
+        rel = (raw & 0x80000000UL) ? (long)raw - 0x100000000L : (long)raw;
+        if (rel < -0x8000 || rel >= 0x8000)
+            continue;               /* ordinary data, not a CALL rel32 */
+        rel -= (long)i;
+        out[i + 1] = (unsigned char)(rel & 0xFF);
+        out[i + 2] = (unsigned char)((rel >> 8) & 0xFF);
+        out[i + 3] = (unsigned char)((rel >> 16) & 0xFF);
+        out[i + 4] = (unsigned char)((rel >> 24) & 0xFF);
+    }
+}
+
 /* ---------- Decompress ---------------------------------------------------- */
 static int compo_decompress(BITR *br, const COMPFMT *fmt,
                             const unsigned char *src, unsigned long srcLen,
                             const RIFTENTRY *rift, unsigned riftN,
-                            unsigned char *out, unsigned long outLen)
+                            unsigned char *out, unsigned long outLen,
+                            int e8Translate)
 {
     unsigned long pos = 0;
     unsigned long hist[3] = { 0, 0, 0 };
@@ -711,12 +737,23 @@ static int compo_decompress(BITR *br, const COMPFMT *fmt,
             }
             if (sym.value == 0x54000UL)
             {
+                /* With an empty rift table the identity map applies to the
+                 * combined source+output window: positions below srcLen read
+                 * the source, later positions read already-decoded output. */
                 long sp = (long)pos + riftOff;
-                if (sp < 0 || (unsigned long)sp >= srcLen)
+                unsigned long j;
+                if (sp < 0 || (unsigned long)(sp + (long)len) > srcLen + pos)
                     return -1;
-                if (len > srcLen - (unsigned long)sp)
-                    len = srcLen - (unsigned long)sp;
-                memcpy(out + pos, src + sp, (size_t)len);
+                if (len > outLen - pos)
+                    len = outLen - pos;
+                for (j = 0; j < len; ++j)
+                {
+                    long ap = sp + (long)j;
+                    if (ap < (long)srcLen)
+                        out[pos + j] = src[ap];
+                    else
+                        out[pos + j] = out[ap - (long)srcLen];
+                }
             }
             else if (sym.value < 0x54000UL)
             {
@@ -763,7 +800,8 @@ static int compo_decompress(BITR *br, const COMPFMT *fmt,
             pos += len;
         }
     }
-
+    if (e8Translate)
+        e8_untranslate(out, outLen);
     return 0;
 }
 
@@ -1325,7 +1363,7 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
             else
                 rc = compo_decompress(&pbr, &cf,
                     (const unsigned char *)source, sourceLen,
-                    rt, rn, result, h.targetSize);
+                    rt, rn, result, h.targetSize, (int)(h.flags & 0x1));
             if (rc != 0)
             {
                 free(result);
