@@ -953,3 +953,14 @@ Phase D is the genuine open-ended piece.
     together; the chained delta then crashed inside the native path, so
     both changes were reverted.  The committed state remains byte-exact for
     the first delta, and real chained deltas still use `msdelta.dll`.
+
+    **Compo port, part 26 (IntFormat consumption fixed).**  `if_decode()`
+    consumed one bit per tree level and `if_read_number()` then consumed
+    `len[s]` more, so every IntFormat number ate its code twice.  An
+    isolated model of the corrected reader (peek the code in `if_decode`,
+    consume `len[s]` in `if_read_number`) was run against the 328-byte pre
+    blob from the wusettingsprovider delta: it parses a plausible 202-entry
+    RIFT table whose offsets stay inside the image.  The one-line fix is
+    now in `src/delta.c`.  It leaves the first real delta byte-exact and
+    all PA30/PA19/XPRESS/LZX/LZMS regression suites green; pre-blob parsing
+    itself is still not enabled in the native decoder.

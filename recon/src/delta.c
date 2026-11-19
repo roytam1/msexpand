@@ -179,8 +179,8 @@ static unsigned if_decode(const INTFORMAT *f, BITR *br)
     /* Huffman code bits are consumed MSB-first from the 32-bit window. */
     for (len = 1; len <= 16; ++len)
     {
-        code = (code << 1) | br_bit(br, 0);
-        br_skip(br, 1);
+        /* Decode peeks; if_read_number() consumes the code bits. */
+        code = (code << 1) | br_bit(br, len - 1);
         countv = f->count[len];
         if (code - countv < first)
             return f->sym[index + (code - first)];
