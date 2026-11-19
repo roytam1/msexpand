@@ -290,38 +290,6 @@ static int rift_read(BITR *br, RIFTENTRY **out, unsigned *outn)
     return 0;
 }
 
-/* ---------- compo CompositeFormat ---------------------------------------- */
-typedef struct tagCOMPFMT
-{
-    unsigned nSeg;
-    unsigned boundary[32];
-    unsigned char metaLen[39];
-} COMPFMT;
-
-static int compfmt_read(COMPFMT *f, BITR *br)
-{
-    unsigned i;
-    unsigned long prev = 0;
-    memset(f, 0, sizeof(*f));
-    if (br_read(br, 1))
-    {
-        f->nSeg = 1;
-        f->boundary[0] = 0;
-        return 0;                   /* default format */
-    }
-    f->nSeg = br_read_int(br);
-    if (f->nSeg == 0 || f->nSeg > 32)
-        return -1;
-    for (i = 0; i < f->nSeg; ++i)
-    {
-        prev += br_read_int(br);
-        f->boundary[i] = (unsigned)prev;
-    }
-    for (i = 0; i < 39; ++i)
-        f->metaLen[i] = (unsigned char)br_read(br, 4);
-    return 0;
-}
-
 /* ---------- generic canonical Huffman (bit-reversed, LSB-first) ----------- */
 #define HUFF_MAX_SYMS 872
 #define HUFF_MAX_BITS 16
@@ -332,6 +300,7 @@ typedef struct tagHUFF
     unsigned maxBits;
     unsigned char len[HUFF_MAX_SYMS];
     unsigned int code[HUFF_MAX_SYMS];   /* bit-reversed canonical codes */
+    unsigned int msb[HUFF_MAX_SYMS];    /* canonical codes, MSB-first */
 } HUFF;
 
 static int huff_build(HUFF *h, const unsigned char *lens, unsigned n,
@@ -376,6 +345,7 @@ static int huff_build(HUFF *h, const unsigned char *lens, unsigned n,
             unsigned c = first[l]++;
             unsigned r = 0;
             unsigned k;
+            h->msb[i] = c;
             for (k = 0; k < l; ++k)
             {
                 r = (r << 1) | (c & 1);
@@ -398,6 +368,24 @@ static unsigned huff_decode(const HUFF *h, BITR *br)
         for (i = 0; i < h->n; ++i)
         {
             if (h->len[i] == len && h->code[i] == code)
+                return i;
+        }
+    }
+    return 0;
+}
+
+/* The meta-code stream is consumed MSB-first (like the IntFormat codes). */
+static unsigned huff_decode_msb(const HUFF *h, BITR *br)
+{
+    unsigned code = 0;
+    unsigned len;
+    unsigned i;
+    for (len = 1; len <= h->maxBits; ++len)
+    {
+        code = (code << 1) | br_read(br, 1);
+        for (i = 0; i < h->n; ++i)
+        {
+            if (h->len[i] == len && h->msb[i] == code)
                 return i;
         }
     }
@@ -429,7 +417,7 @@ static int cl_read(unsigned char *lens, BITR *br, const HUFF *meta,
     memset(lens, 0, 872);
     while (pos < 872)
     {
-        unsigned sym = huff_decode(meta, br);
+        unsigned sym = huff_decode_msb(meta, br);
         if (sym < 17)
         {
             lens[pos++] = (unsigned char)sym;
@@ -471,6 +459,56 @@ static int cl_read(unsigned char *lens, BITR *br, const HUFF *meta,
                 lens[pos + i] = src[src == lens ? pos - 1 + i : pos + i];
             pos += run;
         }
+    }
+    return 0;
+}
+
+/* ---------- compo CompositeFormat ---------------------------------------- */
+typedef struct tagCOMPFMT
+{
+    unsigned nSeg;
+    unsigned boundary[32];
+    unsigned char metaLen[39];
+    unsigned char lens[32][872];
+} COMPFMT;
+
+static int compfmt_read(COMPFMT *f, BITR *br)
+{
+    HUFF meta;
+    unsigned char initial[872];
+    const unsigned char *baseline;
+    unsigned i;
+    unsigned long prev = 0;
+
+    memset(f, 0, sizeof(*f));
+    if (br_read(br, 1))
+    {
+        f->nSeg = 1;
+        f->boundary[0] = 0;
+        return 0;                   /* default format */
+    }
+    f->nSeg = br_read_int(br);
+    if (f->nSeg == 0 || f->nSeg > 32)
+        return -1;
+    for (i = 0; i < f->nSeg; ++i)
+    {
+        prev += br_read_int(br);
+        f->boundary[i] = (unsigned)prev;
+    }
+    for (i = 0; i < 39; ++i)
+        f->metaLen[i] = (unsigned char)br_read(br, 4);
+    if (huff_build(&meta, f->metaLen, 39, 15) != 0)
+        return -1;
+
+    /* Each segment's length set is delta-coded against the previous one.
+     * The encoder starts from Init(Val=1), which memset()s the lengths to 0. */
+    memset(initial, 0, sizeof(initial));
+    baseline = initial;
+    for (i = 0; i < f->nSeg; ++i)
+    {
+        if (cl_read(f->lens[i], br, &meta, baseline) != 0)
+            return -1;
+        baseline = f->lens[i];
     }
     return 0;
 }
@@ -600,20 +638,18 @@ static int compo_decompress(BITR *br, const COMPFMT *fmt,
     unsigned long hist[3] = { 0, 0, 0 };
     COMPF cf;
     unsigned char lens[872];
-    unsigned char baseline[872];
     unsigned segIndex = 0;
-    int needFormat = 1;
+    int currentSeg = -1;
     int rc;
 
-    memset(baseline, 0, sizeof(baseline));
     while (pos < outLen)
     {
         SYMBOL sym;
-        if (needFormat)
+        while (segIndex + 1 < fmt->nSeg &&
+               pos >= fmt->boundary[segIndex + 1])
+            ++segIndex;
+        if ((int)segIndex != currentSeg)
         {
-            while (segIndex + 1 < fmt->nSeg &&
-                   pos > fmt->boundary[segIndex])
-                ++segIndex;
             if (fmt->nSeg == 1 && fmt->boundary[0] == 0)
             {
                 make_fixed_lengths(lens, 600);
@@ -622,15 +658,11 @@ static int compo_decompress(BITR *br, const COMPFMT *fmt,
             }
             else
             {
-                /* Explicit per-segment lengths are not supported by this
-                 * partial port; the default (fixed) code is used. */
-                make_fixed_lengths(lens, 600);
-                make_fixed_lengths(lens + 600, 256);
-                make_fixed_lengths(lens + 856, 16);
+                memcpy(lens, fmt->lens[segIndex], sizeof(lens));
             }
             if (compf_build(&cf, lens) != 0)
                 return -1;
-            needFormat = 0;
+            currentSeg = (int)segIndex;
         }
 
         rc = cf_read_symbol(&cf, br, &sym);
@@ -681,12 +713,21 @@ static int compo_decompress(BITR *br, const COMPFMT *fmt,
             if (sym.value != 0x54000UL)
             {
                 unsigned long i;
-                if (dist == 0 || dist > pos)
+                /* The match window is the source file followed by the
+                 * bytes decoded so far, so a distance larger than `pos`
+                 * reaches back into the source. */
+                if (dist == 0 || dist > pos + srcLen)
                     return -1;
                 if (len > outLen - pos)
                     len = outLen - pos;
                 for (i = 0; i < len; ++i)
-                    out[pos + i] = out[pos + i - dist];
+                {
+                    long ap = (long)pos + (long)i - (long)dist;
+                    if (ap >= 0)
+                        out[pos + i] = out[ap];
+                    else
+                        out[pos + i] = src[srcLen + ap];
+                }
             }
             if (hist[0] != dist)
             {

@@ -824,3 +824,24 @@ Phase D is the genuine open-ended piece.
     one matches the SHA256 hash and declared length in the manifest.  The
     IE6 SFX, XPRESS (40/40), LZX, LZMS (6/6) and PA19 regression suites
     still pass.
+
+    **Compo port, part 19 (in progress).**  The native PA30 path now reads
+    explicit per-segment `CompressionLengths` instead of always using the
+    default fixed code: `compfmt_read()` builds the 39-symbol meta Huffman
+    code, `cl_read()` is wired up for each segment with the previous segment
+    as baseline (the encoder starts from an all-zero baseline), and
+    `compo_decompress()` switches length sets at segment boundaries.
+
+    The meta-code stream is consumed MSB-first (`huff_decode_msb`), matching
+    `statichuffman::DecoderTable::Decode` + `Consume`.  With that, the decoded
+    length sets for the KB2959977 blob 0 are complete Huffman codes (Kraft
+    sum exactly 1 for main, len and dist in both segments), and the first
+    decoded symbols are the expected PE header bytes.  Generated PA30 vectors
+    and all other regression suites still pass with `PA30_NO_OS=1`.
+
+    Still unresolved: decoding diverges partway through real deltas.  The
+    first bad long-distance symbol decodes to a distance larger than any
+    valid window position (e.g. 24741 at output position 5230), so a match
+    length or distance field is misread after the early literals.  Real
+    deltas therefore still require the OS `msdelta.dll` delegation, which
+    remains the default.
