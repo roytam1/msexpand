@@ -864,3 +864,19 @@ Phase D is the genuine open-ended piece.
     index mapping or an earlier rift/source-window distance remains suspect.
     Real deltas therefore still need `msdelta.dll` delegation; all regression
     suites pass with the native path for the generated vectors.
+
+    **Compo port, part 21 (repeat history / E8).**  Tracing the byte-592
+    mismatch against `InternalProcess` (`msdelta.dll.lst:61468`) showed the
+    history update was incomplete: the DLL does not shift the third slot when
+    the *old second* slot already equals the new distance.  `compo_decompress`
+    now checks both slots, which moves the first divergence from offset 592
+    to offset 9655 and keeps the decoder alive to position 11696.
+
+    All remaining differences are x86 `E8` CALL displacements.  The encoded
+    rel32 equals the OS value plus the byte position of the `E8` opcode
+    (e.g. `0x470a` at position 9654 becomes `0x2154`); displacements that are
+    large data values (`0x2a004022`, `0x8b0b0000`) are deliberately left
+    alone.  An incremental translation pass was attempted but match copies
+    re-translate already-translated bytes and made the first divergence move
+    backwards, so it was backed out.  Real deltas still use `msdelta.dll`
+    delegation; all regression suites pass natively for generated vectors.

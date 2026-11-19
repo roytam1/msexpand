@@ -750,15 +750,20 @@ static int compo_decompress(BITR *br, const COMPFMT *fmt,
                         out[pos + i] = src[srcLen + ap];
                 }
             }
+            /* Mirrors InternalProcess: the third slot is not overwritten
+             * when the old second slot already equals the new distance. */
             if (hist[0] != dist)
             {
-                hist[2] = hist[1];
+                unsigned long oldSecond = hist[1];
                 hist[1] = hist[0];
+                if (oldSecond != dist)
+                    hist[2] = oldSecond;
                 hist[0] = dist;
             }
             pos += len;
         }
     }
+
     return 0;
 }
 
