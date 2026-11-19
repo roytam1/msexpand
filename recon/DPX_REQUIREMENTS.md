@@ -935,3 +935,21 @@ Phase D is the genuine open-ended piece.
     must also drive the transform, and our PA19 transform module expects a
     different option-flag mapping.  The committed state is unchanged; real
     deltas beyond the first continue to use `msdelta.dll`.
+
+    **Compo port, part 25 (pre-blob RIFT table).**  The pre blob is a
+    bit-packed `PortableExecutableInfo`: 64-bit ImageBase, 32-bit
+    GlobalPointer, 32-bit TimeStamp, a RiftTable, optional CliMetadata,
+    then a second RiftTable (the compression map) and optional CliMap.
+    For the wusettingsprovider delta the first table is empty, CliMetadata
+    is present (15 dwords, 3 bits, a 64-bit presence mask, then one dword
+    per set bit), and the second table starts with a non-empty flag.  A
+    bounded scan found a plausible table at bit 1644 of the pre blob
+    (IntFormat params 95/3/43, 112 entries).
+
+    `if_decode()` also double-consumes Huffman bits: the DLL's
+    `IntFormat::ReadNumber` peeks with `DecoderTable::Decode` and then
+    consumes `len[s]`, while ours did both in `if_decode` and again in
+    `if_read_number`.  Fixing that and parsing the pre blob were attempted
+    together; the chained delta then crashed inside the native path, so
+    both changes were reverted.  The committed state remains byte-exact for
+    the first delta, and real chained deltas still use `msdelta.dll`.
