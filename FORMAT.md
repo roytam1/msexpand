@@ -448,3 +448,58 @@ target pulls in its patch and source automatically.
   On the IE6 SP1 KB2722913 hotfix it produces all 18 patched binaries
   byte-identically to the SFX-generated `RTMQFE` outputs, both with OS
   delegation and with `PA19_NO_OS=1`.
+* MSU handling lives in `recon/src/dpx.c` (nested cabinets) and
+  `recon/src/cixapply.c` (CIX targets). On
+  `windows8.1-kb2959977-x86_5ccf...msu` it extracts the outer CAB, the
+  nested payload CAB, and all 513 CIX targets — every target matches its
+  manifest SHA256 and declared length.
+
+---
+
+# MSU (Microsoft Update Standalone Package) layout
+
+An `.msu` is itself an ordinary CAB (possibly with `flags = 0x0004`
+reserved header fields). Its entries include `WSUSSCAN.cab`, a payload CAB,
+and XML metadata. The payload CAB is LZX-compressed and carries a
+`_manifest_.cix.xml` plus numbered delta blobs.
+
+```
+MSU (CAB)
+  WSUSSCAN.cab
+  <kb>-<arch>.cab                 # nested payload CAB (often LZX:21)
+  <kb>-pkgProperties.txt
+  <kb>.xml
+
+nested payload CAB
+  _manifest_.cix.xml              # CIX index
+  0, 1, 2, ...                    # PA30 delta blobs
+  <raw payload files>
+```
+
+The CIX manifest is a namespaced XML document (`xmlns="urn:ContainerIndex"`)
+with this shape:
+
+```xml
+<Container name="..." type="CAB" length="..." version="1">
+  <Files>
+    <File id="27" name="..." length="11132" ...>
+      <Delta>
+        <Source type="RAW" name="..."/>
+      </Delta>
+    </File>
+    <File id="158" name="...\wuauclt.exe" length="49544" ...>
+      <Delta>
+        <Source type="PA30" name="0"/>
+        <Basis file="27"/>
+      </Delta>
+    </File>
+  </Files>
+</Container>
+```
+
+`Source type="RAW"` means the bytes come directly from the named CAB entry.
+`Source type="PA30"` means the named CAB entry holds a PA30 delta; the
+`Basis` element names the CIX `id` of the source file. Bases may themselves
+be PA30 outputs, so targets form chains and must be resolved in dependency
+order. `expand_recon.exe` extracts the nested CAB into a directory named
+after it and resolves the CIX targets there.

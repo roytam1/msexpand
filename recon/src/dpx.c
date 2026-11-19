@@ -7,6 +7,7 @@
  * extract the selected files with the integrated CAB reader.
  */
 #include "expand.h"
+#include "cixapply.h"
 
 #define MAX_SELECT 4096
 
@@ -76,6 +77,60 @@ void DpxComputeTargetDir(char *buf, size_t bufSize)
         GetCurrentDirectoryA(sizeof(cwd), cwd);
         strncpy(buf, cwd, bufSize - 1);
         buf[bufSize - 1] = 0;
+    }
+}
+
+/* A cabinet inside a cabinet is common in Windows Update packages: the MSU
+ * holds a payload CAB which in turn holds CIX manifest and delta blobs. */
+static void DpxNestedCab(const char *cabPath, const char *targetDir)
+{
+    int count;
+    int i;
+
+    count = CabGetEntryCount(cabPath);
+    if (count <= 0)
+        return;
+    for (i = 0; i < count; ++i)
+    {
+        char entry[MAX_PATH];
+        char full[MAX_PATH];
+        char sub[MAX_PATH];
+        char sig[4];
+        FILE *f;
+        int inner;
+        int j;
+        size_t n;
+
+        if (!CabGetEntryName(cabPath, i, entry, sizeof(entry)))
+            continue;
+        JoinPath(full, sizeof(full), targetDir, entry);
+        f = fopen(full, "rb");
+        if (!f)
+            continue;
+        n = fread(sig, 1, sizeof(sig), f);
+        fclose(f);
+        if (n != sizeof(sig) || memcmp(sig, "MSCF", 4) != 0)
+            continue;
+
+        strncpy(sub, full, sizeof(sub) - 1);
+        sub[sizeof(sub) - 1] = 0;
+        n = strlen(sub);
+        if (n > 4 && _stricmp(sub + n - 4, ".cab") == 0)
+            sub[n - 4] = 0;
+        CreateDirectoryA(sub, NULL);
+
+        inner = CabGetEntryCount(full);
+        for (j = 0; j < inner; ++j)
+        {
+            char name[MAX_PATH];
+            char to[MAX_PATH];
+            if (!CabGetEntryName(full, j, name, sizeof(name)))
+                continue;
+            JoinPath(to, sizeof(to), sub, name);
+            EnsureParentDir(to);
+            CabExtractOne(full, name, to);
+        }
+        (void)CixApplyCab(full, sub);
     }
 }
 
@@ -204,7 +259,10 @@ int DpxExpandFile(void)
         if (failed)
             PrintMsg(MSG_DPX_FAIL, -1);
         else
+        {
             PrintMsg(MSG_DPX_COMPLETE);
+            DpxNestedCab(src, targetDir);
+        }
     }
 
     result = failed ? 0 : 1;

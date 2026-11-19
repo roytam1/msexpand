@@ -1108,6 +1108,89 @@ static int Pa19Apply(const unsigned char *d, unsigned long n,
     return 0;
 }
 
+/* ---------- OS PA30 delegation -------------------------------------------- */
+/* The native compo decoder in this tree only implements the default
+ * CompositeFormat.  Real deltas (e.g. the ones in Windows Update MSU
+ * packages) carry explicit per-segment code lengths, so fall back to the
+ * system msdelta.dll, exactly as the PA19 path falls back to mspatcha.dll.
+ * Set PA30_NO_OS=1 to exercise the native path anyway. */
+typedef BOOL (WINAPI *PFN_APPLY_DELTA_A)(__int64, LPCSTR, LPCSTR, LPCSTR);
+
+static int Pa30ApplyViaOS(const unsigned char *d, unsigned long n,
+                          const unsigned char *src, unsigned long srcLen,
+                          unsigned char **out, unsigned long *outLen)
+{
+    HMODULE h;
+    PFN_APPLY_DELTA_A fn;
+    char tmpDir[MAX_PATH];
+    char srcPath[MAX_PATH];
+    char deltaPath[MAX_PATH];
+    char outPath[MAX_PATH];
+    FILE *f;
+    BOOL ok;
+    unsigned char *buf;
+    long size;
+
+    if (getenv("PA30_NO_OS"))
+        return -1;
+    h = LoadLibraryA("msdelta.dll");
+    if (!h)
+        return -1;
+    fn = (PFN_APPLY_DELTA_A)GetProcAddress(h, "ApplyDeltaA");
+    if (!fn)
+    {
+        FreeLibrary(h);
+        return -1;
+    }
+    GetTempPathA(MAX_PATH, tmpDir);
+    GetTempFileNameA(tmpDir, "d30", 0, srcPath);
+    GetTempFileNameA(tmpDir, "d30", 0, deltaPath);
+    GetTempFileNameA(tmpDir, "d30", 0, outPath);
+    f = fopen(srcPath, "wb");
+    if (!f) goto fail;
+    if (srcLen && fwrite(src, 1, (size_t)srcLen, f) != (size_t)srcLen)
+    { fclose(f); goto fail; }
+    fclose(f);
+    f = fopen(deltaPath, "wb");
+    if (!f) goto fail;
+    if (fwrite(d, 1, (size_t)n, f) != (size_t)n)
+    { fclose(f); goto fail; }
+    fclose(f);
+
+    ok = fn(0, srcPath, deltaPath, outPath);
+    if (!ok)
+        goto fail;
+    f = fopen(outPath, "rb");
+    if (!f) goto fail;
+    fseek(f, 0, SEEK_END);
+    size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (size < 0)
+    { fclose(f); goto fail; }
+    buf = (unsigned char *)malloc((size_t)size ? (size_t)size : 1);
+    if (!buf || (size && fread(buf, 1, (size_t)size, f) != (size_t)size))
+    {
+        free(buf);
+        fclose(f);
+        goto fail;
+    }
+    fclose(f);
+    DeleteFileA(srcPath);
+    DeleteFileA(deltaPath);
+    DeleteFileA(outPath);
+    FreeLibrary(h);
+    *out = buf;
+    *outLen = (unsigned long)size;
+    return 0;
+
+fail:
+    DeleteFileA(srcPath);
+    DeleteFileA(deltaPath);
+    DeleteFileA(outPath);
+    FreeLibrary(h);
+    return -1;
+}
+
 /* ---------- public API ---------------------------------------------------- */
 int DeltaIsDelta(const unsigned char *delta, unsigned long deltaLen)
 {
@@ -1133,6 +1216,8 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
     *outLen = 0;
     if (deltaLen >= 4 && memcmp(delta, "PA19", 4) == 0)
         return Pa19Apply(delta, deltaLen, source, sourceLen, out, outLen);
+    if (Pa30ApplyViaOS(delta, deltaLen, source, sourceLen, out, outLen) == 0)
+        return 0;
     if (Pa30ParseHeader(delta, deltaLen, &h) != 0)
         return -1;
 

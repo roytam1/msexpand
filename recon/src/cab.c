@@ -323,6 +323,7 @@ typedef struct tagCAB
 {
     unsigned char *data;
     long dataLen;
+    unsigned long cbCabinet;   /* cfhead.cbCabinet: excludes trailing data */
     unsigned long coffFiles;
     unsigned short cFolders;
     unsigned short cFiles;
@@ -355,6 +356,8 @@ static int CabOpen(CAB *cab, const char *path)
     long size;
     unsigned long off;
     unsigned short reserveBytes = 0;
+    unsigned short cbCFFolder = 0;
+    unsigned char cbCFData = 0;
     int i, n;
 
     memset(cab, 0, sizeof(*cab));
@@ -388,23 +391,31 @@ static int CabOpen(CAB *cab, const char *path)
         CabFree(cab);
         return 0;
     }
+    cab->cbCabinet = Rd32(cab->data + 8);
+    if (cab->cbCabinet > (unsigned long)size)
+        cab->cbCabinet = (unsigned long)size;
     cab->coffFiles = Rd32(cab->data + 16);
     cab->cFolders  = Rd16(cab->data + 26);
     cab->cFiles    = Rd16(cab->data + 28);
     cab->flags     = Rd16(cab->data + 30);
 
+    /* CFHEADER reserved fields: cbCFHeader[2], cbCFFolder[1], cbCFData[1],
+     * then cbCFHeader bytes of reserved data.  The folder headers therefore
+     * start at 40 + cbCFHeader, not 38 + cbCFHeader.  MSU packages always
+     * set 0x0004, and getting this two bytes wrong makes every file look
+     * truncated. */
     off = 36;
     if (cab->flags & 0x0004)
     {
         reserveBytes = Rd16(cab->data + 36);
-        off += 2;
-        if (cab->flags & 0x0001)
-            off += 2 + 2;        /* cbCFHeader + cbCFFolder */
-        off += reserveBytes;
+        cbCFFolder = cab->data[38];
+        cbCFData = cab->data[39];
+        off = 40 + (unsigned long)reserveBytes;
     }
     else if (cab->flags & 0x0001)
     {
-        off += 2 + 2;
+        cbCFFolder = (unsigned short)Rd16(cab->data + 36);
+        off = 38;
     }
 
     cab->folders = (CABFOLDER *)calloc(
@@ -429,7 +440,7 @@ static int CabOpen(CAB *cab, const char *path)
         cab->folders[i].typeCompress = Rd16(p + 6);
         off += 8;
         if (cab->flags & 0x0001)
-            off += Rd16(cab->data + 36 + (cab->flags & 0x0004 ? 4 : 0));
+            off += cbCFFolder;
     }
 
     {
@@ -438,7 +449,8 @@ static int CabOpen(CAB *cab, const char *path)
         {
             const unsigned char *p;
             int nameLen;
-            if (foff + 16 > (unsigned long)cab->dataLen)
+            int nameOff = 16 + ((cab->flags & 0x0002) ? cbCFData : 0);
+            if (foff + (unsigned long)nameOff > (unsigned long)cab->dataLen)
             {
                 CabFree(cab);
                 return 0;
@@ -448,15 +460,16 @@ static int CabOpen(CAB *cab, const char *path)
             cab->files[i].uoffFolderStart = Rd32(p + 4);
             cab->files[i].iFolder = Rd16(p + 8);
             nameLen = 0;
-            while (foff + 16 + nameLen < (unsigned long)cab->dataLen &&
-                   p[16 + nameLen] != 0)
+            while (foff + (unsigned long)nameOff + (unsigned long)nameLen <
+                   (unsigned long)cab->dataLen &&
+                   p[nameOff + nameLen] != 0)
                 ++nameLen;
             n = nameLen;
             if (n >= (int)sizeof(cab->files[i].name))
                 n = (int)sizeof(cab->files[i].name) - 1;
-            memcpy(cab->files[i].name, p + 16, (size_t)n);
+            memcpy(cab->files[i].name, p + nameOff, (size_t)n);
             cab->files[i].name[n] = 0;
-            foff += 16 + (unsigned long)nameLen + 1;
+            foff += (unsigned long)nameOff + (unsigned long)nameLen + 1;
         }
     }
     return 1;
@@ -517,12 +530,12 @@ static int CabDecompressFolder(CAB *cab, int folderIndex,
         unsigned long w = 0;
         int windowBits;
 
-        while (c + 8 <= (unsigned long)cab->dataLen)
+        while (c + 8 <= cab->cbCabinet)
         {
             const unsigned char *p = cab->data + c;
             unsigned short cbData = Rd16(p + 4);
             unsigned short cbUncomp = Rd16(p + 6);
-            if (c + 8 + cbData > (unsigned long)cab->dataLen)
+            if (c + 8 + cbData > cab->cbCabinet)
                 break;
             if (cbUncomp > 0x8000UL)
                 break;
@@ -547,11 +560,11 @@ static int CabDecompressFolder(CAB *cab, int folderIndex,
             return -1;
         }
         c = coff;
-        while (c + 8 <= (unsigned long)cab->dataLen && w < compLen)
+        while (c + 8 <= cab->cbCabinet && w < compLen)
         {
             const unsigned char *p = cab->data + c;
             unsigned short cbData = Rd16(p + 4);
-            if (c + 8 + cbData > (unsigned long)cab->dataLen)
+            if (c + 8 + cbData > cab->cbCabinet)
                 break;
             if (w + cbData > compLen)
                 break;
@@ -575,12 +588,12 @@ static int CabDecompressFolder(CAB *cab, int folderIndex,
         return 1;
     }
 
-    while (coff + 8 <= (unsigned long)cab->dataLen)
+    while (coff + 8 <= cab->cbCabinet)
     {
         const unsigned char *p = cab->data + coff;
         unsigned short cbData = Rd16(p + 4);
         const unsigned char *payload = p + 8;
-        if (coff + 8 + cbData > (unsigned long)cab->dataLen)
+        if (coff + 8 + cbData > cab->cbCabinet)
             break;
 
         if ((folder->typeCompress & 0x000F) == 0)

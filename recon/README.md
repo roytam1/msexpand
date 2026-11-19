@@ -29,6 +29,7 @@ needed ??the CAB reader is compiled into the EXE.
 | `src/lz.c` | `InitGlobalBuffers`, `GetHdr`, `IsCompressed`, `Expand`/`ExpandOrCopyFile`, `LZDecode` (SZDD token stream) |
 | `src/cab.c` | FDI/CAB path: `CabIsCabinet`, cabinet header/folder/file parsing, MSZIP and LZX folder decompression, selected-file extraction |
 | `src/sfx.c` | Windows Update SFX detection, embedded-CAB carving and manifest-driven patch application |
+| `src/cixapply.c` | CIX manifest application: RAW targets and PA30 deltas with basis chains |
 | `src/dpx.c` | `DpxExpandFile`, `EnumerateFilesToExtract`, `AddFilesToExtract`, `ProcessDpxNotification` semantics |
 | `src/util.c` | Wide/ANSI conversion, path joining, `PatternMatch`, parent-directory creation |
 | `src/xml.c` | Minimal UTF-8 XML DOM parser for CIX manifests |
@@ -60,6 +61,14 @@ needed ??the CAB reader is compiled into the EXE.
   with `_sfx_manifest_` and/or `_sfx_.dll`, the CAB is carved out, extracted
   and the manifest's `[Deltas]` are applied with `DeltaApply()`, so patched
   binaries are written directly. `PA19_NO_OS=1` forces the native decoder.
+* **MSU packages with nested cabinets:** an `.msu` outer CAB is extracted,
+  any CAB found among its entries is expanded into a directory named after
+  that CAB, and a `_manifest_.cix.xml` in it is applied: RAW targets are
+  copied and `PA30` deltas are decoded with their basis chains resolved. Real
+  PA30 deltas use explicit per-segment code lengths, so the system
+  `msdelta.dll` is delegated to (`PA30_NO_OS=1` forces the partial native
+  decoder). Verified on `KB2959977`: all 513 CIX targets match their manifest
+  SHA256 hashes and lengths.
 * **PSTREAM/PSF containers (Phase A):** 48-byte header parsing, UTF-8 CIX
   XML index, `-D` listing, `-F:` selection, RAW source ranges, CRC32
   verification, and creation of nested output directories. Tested with the
@@ -77,10 +86,12 @@ needed ??the CAB reader is compiled into the EXE.
 
 ## Known limitations (outside the agreed functional core)
 
-* **PA30 deltas (Phase C):** C89 port of the compo decompressor ??IntFormat,
-  RiftTable, CompositeFormat, CompressionLengths, ReadSymbol and the
-  Decompress loop. Both generated vectors decode byte-identically and a
-  PSF with a PA30 delta target extracts correctly. PA19 decoding is byte-exact both via the OS `mspatcha.dll` (the same delegation the original expand.exe uses) and natively in `src/mslzx.c`; set `PA19_NO_OS=1` to exercise the native path. See `DPX_REQUIREMENTS.md`.
+* **PA30 decompression:** the native port in `delta.c` covers the default
+  CompositeFormat (both generated vectors and a PSF PA30 target are exact),
+  but real deltas with explicit `CompressionLengths` are only decoded via
+  the OS `msdelta.dll`. PA19 decoding is byte-exact both via `mspatcha.dll`
+  and natively in `src/mslzx.c`; `PA19_NO_OS=1` / `PA30_NO_OS=1` force the
+  native paths. See `DPX_REQUIREMENTS.md`.
 * Remaining DPX features: CIX manifests
   inside CABs. Building a PSF requires the
   `job.xml` / CIX machinery of `dpx.dll`, which is far beyond the core.

@@ -272,12 +272,14 @@ static int lzxBuildTree( LzxTree *t, const unsigned char *lens, int n )
 		left -= t->counts[len];
 		if( left<0 ) return 0;
 	}
-	// a tree with no codes at all is not one, but the length tree of
-	// a block without any match is empty, and that is allowed
-	if( left>0 && n>0 ) {
+	// An incomplete canonical tree is legal in LZX (notably the aligned
+	// offset tree); only a tree with no codes at all is invalid here.  The
+	// length tree of a block without matches is empty and is detected by
+	// the caller from the zero lengths.
+	if( n>0 ) {
 		int used = 0;
 		for( i=0; i<n; i++ ) if( lens[i] ) used = 1;
-		if( used ) return 0;
+		if( !used ) return 0;
 	}
 
 	offset[1] = 0;
@@ -588,10 +590,10 @@ static int lzxDecodeFrame( LzxDecoder *d, unsigned long frameSize )
 
 		if( d->blockRemaining==0 ) {
 			// a block that was stored as it is and had an odd
-			// length is followed by a byte that is dropped
+			// length is followed by a whole padding byte that is dropped
 			if( (d->blockType==LZX_BLOCK_UNCOMPRESSED) && (d->blockLength & 1) ) {
-				unsigned int bit;
-				if( !lzxGetBit( d, &bit ) ) return 0;
+				unsigned int pad;
+				if( !lzxGetRawByte( d, &pad ) ) return 0;
 			}
 			if( !lzxReadBlockHeader( d ) ) return 0;
 		}

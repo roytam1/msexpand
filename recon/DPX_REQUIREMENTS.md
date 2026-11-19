@@ -794,3 +794,33 @@ Phase D is the genuine open-ended piece.
     versus the SFX-run `RTMQFE` ground truth; the OS-delegation default is
     also 18/18 exact.  Regression suites (XPRESS 40/40, LZX, LZMS 6/6,
     PA19 OS + native) still pass.
+
+    **MSU / nested CAB / CIX (part 18).**  Extracting
+    `windows8.1-kb2959977-x86_5ccf...msu` exposed three more gaps, all now
+    closed in `expand_recon.exe`:
+
+      1. `src/cab.c` computed the first CFFOLDER offset as `38 + cbCFHeader`
+         when CFHEADER flag 0x0004 was set; it must be `40 + cbCFHeader`
+         (cbCFHeader[2] + cbCFFolder[1] + cbCFData[1]).  CFFILE reserve bytes
+         are now honoured too, and CFDATA walking is bounded by
+         `cfhead.cbCabinet` instead of the whole file, so trailing bytes
+         after the cabinet are ignored.
+      2. `src/lzx.c` rejected incomplete canonical trees (legal for the LZX
+         aligned-offset tree) and dropped only one bit after an odd-length
+         uncompressed block instead of a whole padding byte.  With both
+         fixed, the inner LZX:21 CAB decodes: 514/514 files byte-identical
+         to an independent extraction.
+      3. New `src/cixapply.c` parses `_manifest_.cix.xml` (via `cix.c` /
+         `xml.c`), copies RAW targets, and applies the 181 PA30 deltas by
+         CIX id basis chain.  `dpx.c` expands nested CABs into a directory
+         named after the inner CAB and then applies its CIX manifest.
+
+    Real PA30 blobs use explicit per-segment `CompressionLengths`, which the
+    native compo port does not implement.  `delta.c` now delegates them to
+    the OS `msdelta.dll` `ApplyDeltaA` (disabled by `PA30_NO_OS=1`), exactly
+    as PA19 delegates to `mspatcha.dll`.
+
+    Verification: the full MSU extraction produces 513 CIX targets; every
+    one matches the SHA256 hash and declared length in the manifest.  The
+    IE6 SFX, XPRESS (40/40), LZX, LZMS (6/6) and PA19 regression suites
+    still pass.
