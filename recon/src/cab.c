@@ -308,6 +308,7 @@ static void StripLzxHeaderBit(unsigned char *out, const unsigned char *in,
 typedef struct tagCABFOLDER
 {
     unsigned long coffCabStart;
+    unsigned short cCFData;     /* number of CFDATA blocks in this folder */
     int typeCompress;
 } CABFOLDER;
 
@@ -437,6 +438,7 @@ static int CabOpen(CAB *cab, const char *path)
             return 0;
         }
         cab->folders[i].coffCabStart = Rd32(p);
+        cab->folders[i].cCFData = Rd16(p + 4);
         cab->folders[i].typeCompress = Rd16(p + 6);
         off += 8;
         if (cab->flags & 0x0001)
@@ -529,8 +531,13 @@ static int CabDecompressFolder(CAB *cab, int folderIndex,
         unsigned long c = coff;
         unsigned long w = 0;
         int windowBits;
+        int blocks = 0;
 
-        while (c + 8 <= cab->cbCabinet)
+        /* Only this folder's CFDATA blocks belong to the stream.  Walking
+         * to the end of the cabinet would swallow the next folder's data:
+         * an uncompressed 32768-byte CFDATA block is not "> 0x8000", so the
+         * guard below would not stop it. */
+        while (c + 8 <= cab->cbCabinet && blocks < (int)folder->cCFData)
         {
             const unsigned char *p = cab->data + c;
             unsigned short cbData = Rd16(p + 4);
@@ -542,6 +549,7 @@ static int CabDecompressFolder(CAB *cab, int folderIndex,
             compLen += cbData;
             total += cbUncomp;
             c += 8 + (unsigned long)cbData;
+            ++blocks;
         }
         windowBits = (folder->typeCompress >> 8) & 0x1F;
         if (windowBits < 15 || windowBits > 25)
@@ -560,7 +568,9 @@ static int CabDecompressFolder(CAB *cab, int folderIndex,
             return -1;
         }
         c = coff;
-        while (c + 8 <= cab->cbCabinet && w < compLen)
+        blocks = 0;
+        while (c + 8 <= cab->cbCabinet && w < compLen &&
+               blocks < (int)folder->cCFData)
         {
             const unsigned char *p = cab->data + c;
             unsigned short cbData = Rd16(p + 4);
@@ -571,6 +581,7 @@ static int CabDecompressFolder(CAB *cab, int folderIndex,
             memcpy(comp + w, p + 8, (size_t)cbData);
             w += cbData;
             c += 8 + (unsigned long)cbData;
+            ++blocks;
         }
         if (w != compLen ||
             LzxRawDecompress(comp, compLen, buf, size, windowBits) != 0)
@@ -588,7 +599,7 @@ static int CabDecompressFolder(CAB *cab, int folderIndex,
         return 1;
     }
 
-    while (coff + 8 <= cab->cbCabinet)
+    while (coff + 8 <= cab->cbCabinet && count < (int)folder->cCFData)
     {
         const unsigned char *p = cab->data + coff;
         unsigned short cbData = Rd16(p + 4);
