@@ -1,0 +1,5 @@
+compressed=..\testdata\lzms\v0_comp.bin (12 bytes), size=64, decompress_ret=0
+first16: 41 42 43 44 45 46 47 48 49 4A 4B 4C 4D 4E 4F 50
+expected=..\testdata\lzms\v0_in.bin (64 bytes)
+expect16: 41 42 43 44 45 46 47 48 49 4A 4B 4C 4D 4E 4F 50
+RESULT: MATCH

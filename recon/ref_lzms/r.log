@@ -1,0 +1,15 @@
+[ref] dpower lens: 1 1 1 1 1 1 1 1
+[ref] dpower table: 0003 0003 0003 0003 0003 0003 0003 0003 0003 0003 0003 0003 0003 0003 0003 0003
+[ref] num_offset_slots=20
+[refbit 0] r=FFFFFFFF c=6B42FFD0 p=48 b=BFFFFFD0 -> 0
+[ref] lit 41 at 0 bitsleft=24 bitbuf=0000000000000000
+[refbit 1] r=BFFFFFD0 c=6B42FFD0 p=48 b=8FFFFFD0 -> 0
+[ref] lit 42 at 1 bitsleft=16 bitbuf=0000000000000000
+[refbit 2] r=8FFFFFD0 c=6B42FFD0 p=48 b=6BFFFFD0 -> 0
+[ref] lit 43 at 2 bitsleft=8 bitbuf=0000000000000000
+[refbit 3] r=6BFFFFD0 c=6B42FFD0 p=48 b=50FFFFD0 -> 1
+[refbit 4] r=1B000000 c=1A430000 p=48 b=14400000 -> 1
+[refbit 5] r=06C00000 c=06030000 p=48 b=05100000 -> 1
+[refbit 6] r=01B00000 c=00F30000 p=48 b=01440000 -> 0
+[ref] DELTA power=0 raw=1 off=1 len=23 at 3
+[refbit 7] r=01440000 c=00F30000 p=48 b=00F30000 -> 1

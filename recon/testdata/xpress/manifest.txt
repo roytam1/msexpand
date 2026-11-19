@@ -1,0 +1,40 @@
+00|False|47|39|Plain0: all literals
+01|False|13|300|Plain1: the MS-XCA worked example, 100 copies of abc
+02|False|9|49|Plain2: nibble-encoded length (49 copies of P)
+03|False|11|300|Plain3: byte-encoded length (300 copies of A)
+04|False|11|4002|Plain4: LE16 length (4002 copies of Q)
+05|False|20|300|Plain5: two matches in one flag group
+06|False|21|44|Plain6: shared half-byte between two matches
+07|False|16|65|Plain7: literal between two shared-nibble matches
+08|False|16|70000|Plain8: LE32 length (70000 copies of W)
+09|False|43|132000|Plain9: large offset (6000 copies of a 22-byte phrase)
+10|False|8|11|PlainNib1: length 11
+11|False|8|12|PlainNib2: length 12
+12|False|8|13|PlainNib3: length 13
+13|False|8|14|PlainNib4: length 14
+14|False|8|15|PlainNib5: length 15
+15|False|8|16|PlainNib6: length 16
+16|False|8|17|PlainNib7: length 17
+17|False|8|18|PlainNib8: length 18
+18|False|8|19|PlainNib9: length 19
+19|False|8|20|PlainNib10: length 20
+20|False|8|21|PlainNib11: length 21
+21|False|8|22|PlainNib12: length 22
+22|False|8|23|PlainNib13: length 23
+23|False|8|24|PlainNib14: length 24
+24|False|9|26|PlainByte1: length 26
+25|False|9|50|PlainByte25: length 50
+26|False|9|100|PlainByte75: length 100
+27|False|9|150|PlainByte125: length 150
+28|False|9|200|PlainByte175: length 200
+29|False|9|250|PlainByte225: length 250
+30|False|9|279|PlainByte254: length 279
+31|False|11|25|PlainSharedHalfByteAcrossLiteral
+32|False|24|256|Anchor
+33|True|289|360|Huff0
+34|True|263|9600|Huff1
+35|True|263|3000|Huff2
+36|True|517|20000|Huff3
+37|True|263|65536|Huff4
+38|True|261|21|Huff5
+39|True|273|40|Huff6

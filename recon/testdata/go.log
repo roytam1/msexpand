@@ -1,0 +1,3 @@
+DeltaApply r=0 out=12288
+compare: 10422 / 12288 bytes differ
+first diff at 0: got 00 expected 4D

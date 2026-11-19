@@ -1,0 +1,13 @@
+[Version]
+Signature="$Windows NT$"
+
+[DefaultBranchesServicePacks]
+0=W2K
+
+[SourceInfsBranches]
+W2K=update\update_W2K.inf
+
+[Strings]
+KBNUM="KB2722913"
+BuildTimeStamp ="20120702.120000"
+

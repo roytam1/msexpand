@@ -1,0 +1,5 @@
+.OPTION EXPLICIT
+.Set CabinetNameTemplate=lzxtest.cab
+.Set DiskDirectoryTemplate=
+.Set CompressionType=LZX
+"plain.txt"

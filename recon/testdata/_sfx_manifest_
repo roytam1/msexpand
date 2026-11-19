@@ -1,0 +1,53 @@
+[Options]
+
+Run = "update\update.exe"
+PatchDll = "_sfx_.dll"
+
+[Deltas]
+"RTMQFE\browseui.dll"	= "browseui.dll._p", "RTMGDR\browseui.dll"
+"RTMQFE\cdfview.dll"	= "cdfview.dll._p", "RTMGDR\cdfview.dll"
+"RTMQFE\danim.dll"	= "danim.dll._p", "RTMGDR\danim.dll"
+"RTMQFE\dxtmsft.dll"	= "dxtmsft.dll._p", "RTMGDR\dxtmsft.dll"
+"RTMQFE\dxtrans.dll"	= "dxtrans.dll._p", "RTMGDR\dxtrans.dll"
+"RTMQFE\iepeers.dll"	= "iepeers.dll._p", "RTMGDR\iepeers.dll"
+"RTMQFE\inseng.dll"	= "inseng.dll._p", "RTMGDR\inseng.dll"
+"RTMQFE\jsproxy.dll"	= "jsproxy.dll._p", "RTMGDR\jsproxy.dll"
+"RTMQFE\mshtml.dll"	= "mshtml.dll._p", "RTMGDR\mshtml.dll"
+"RTMQFE\mshtmled.dll"	= "mshtmled.dll._p", "RTMGDR\mshtmled.dll"
+"RTMQFE\msrating.dll"	= "msrating.dll._p", "RTMGDR\msrating.dll"
+"RTMQFE\mstime.dll"	= "mstime.dll._p", "RTMGDR\mstime.dll"
+"RTMQFE\pngfilt.dll"	= "pngfilt.dll._p", "RTMGDR\pngfilt.dll"
+"RTMQFE\shdocvw.dll"	= "shdocvw.dll._p", "RTMGDR\shdocvw.dll"
+"RTMQFE\shlwapi.dll"	= "shlwapi.dll._p", "RTMGDR\shlwapi.dll"
+"RTMQFE\tdc.ocx"	= "tdc.ocx._p", "RTMGDR\tdc.ocx"
+"RTMQFE\urlmon.dll"	= "urlmon.dll._p", "RTMGDR\urlmon.dll"
+"RTMQFE\wininet.dll"	= "wininet.dll._p", "RTMGDR\wininet.dll"
+
+[Verify]
+"RTMQFE\browseui.dll"	= 4A5423E3E1751CD27050D6EE72982F28
+"RTMQFE\cdfview.dll"	= DAF661640C37584728DF6A138F88F424
+"RTMQFE\danim.dll"	= 7E56780AE919CCEE2076792C19F7AD59
+"RTMQFE\dxtmsft.dll"	= 04ABBCB6DE71C5395A0F08AD8FE46659
+"RTMQFE\dxtrans.dll"	= 76226AF75090C26E0624444B3362EEF0
+"RTMQFE\iepeers.dll"	= 77DBA1B05CB9C3D40CCFE25A5ABCEC50
+"RTMQFE\inseng.dll"	= 95309CDA0F989B892B8BB3E55F487FF7
+"RTMQFE\jsproxy.dll"	= E72FB57EBD8B570750CDDD6DCF8D29C6
+"RTMQFE\mshtml.dll"	= F261555EA464BD65A829BB52CEC8D7F7
+"RTMQFE\mshtmled.dll"	= 5494F9F2615EBAA792462FB506C11543
+"RTMQFE\msrating.dll"	= 2B510C37B492A424450A47134C864264
+"RTMQFE\mstime.dll"	= 60CC11E2C7A4CCB13E37D4F8F9BCC79E
+"RTMQFE\pngfilt.dll"	= 16C4952B4BEE17B134E507C0C056F5A0
+"RTMQFE\shdocvw.dll"	= 6844B4EA799E6051D103661AE24691EE
+"RTMQFE\shlwapi.dll"	= F2E4A32A8158678FC20C3AD7E4352537
+"RTMQFE\tdc.ocx"	= 1BE5C5270427DD34FA743F8CDEA85E2F
+"RTMQFE\urlmon.dll"	= DE4CA2F42F9A31B97B6EDA52E767EF63
+"RTMQFE\wininet.dll"	= E7DA92B21473DD8BCFB1861A7A9FB96B
+
+[Copy]
+
+"update\iecustom.dll" = "iecustom.dll"
+
+[Delete]
+
+"*._p"
+"_sfx_.dll"

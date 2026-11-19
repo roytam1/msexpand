@@ -1,0 +1,5 @@
+.OPTION EXPLICIT
+.Set CabinetNameTemplate=big.cab
+.Set DiskDirectoryTemplate=
+.Set CompressionType=MSZIP
+"big.txt"

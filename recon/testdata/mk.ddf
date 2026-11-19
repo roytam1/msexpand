@@ -1,0 +1,6 @@
+.OPTION EXPLICIT
+.Set CabinetNameTemplate=multi.cab
+.Set DiskDirectoryTemplate=
+.Set CompressionType=MSZIP
+"plain.txt"
+"two.txt"
