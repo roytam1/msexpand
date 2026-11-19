@@ -594,24 +594,45 @@ static int cf_read_symbol(COMPF *cf, BITR *br, SYMBOL *sym)
     {
         unsigned v15 = k - 7;
         unsigned v20;
+        if (v15 == 0)
+        {
+            unsigned v16;
+            if (br_read(br, 1))
+            {
+                unsigned v17;
+                if (br_read(br, 1))
+                    v17 = br_read(br, 4) + 8;
+                else
+                    v17 = br_read(br, 3);
+                v16 = v17 + 4;
+            }
+            else
+            {
+                v16 = br_read(br, 2);
+            }
+            v15 = v16 + 36;
+        }
         if (v15 >= 0x40)
             return -1;
         if (v15 >= 4)
         {
             unsigned v21 = (v15 >> 1) - 1;
             unsigned v22 = (v15 & 1) + 2;
-            unsigned ds;
             if (v21 >= 4)
+            {
+                unsigned ds;
                 v22 = br_read(br, v21 - 4) | (v22 << (v21 - 4));
-            ds = huff_decode(&cf->dist, br);
-            v20 = ds | (16 * v22);
+                ds = huff_decode(&cf->dist, br);
+                v20 = ds | (16 * v22);
+            }
+            else
+            {
+                v20 = (v22 << v21) | br_read(br, v21);
+            }
         }
         else
         {
-            unsigned v21 = v15 >> 1;
-            v20 = ((v15 & 1) + 2) << v21;
-            if (v21)
-                v20 |= br_read(br, v21);
+            v20 = v15;
         }
         sym->value = (unsigned long)v20 + 344067UL;   /* +0x54003 */
     }

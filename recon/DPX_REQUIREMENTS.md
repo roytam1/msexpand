@@ -845,3 +845,22 @@ Phase D is the genuine open-ended piece.
     length or distance field is misread after the early literals.  Real
     deltas therefore still require the OS `msdelta.dll` delegation, which
     remains the default.
+
+    **Compo port, part 20 (match distance).**  Comparing a partial native
+    decode against the OS-produced target located the first divergence at
+    output offset 592 (previously offset 9).  The cause was in
+    `cf_read_symbol()`: for long-distance symbols the DLL decodes a Huffman
+    distance symbol only when `v21 >= 4`; for smaller values it uses
+    `(v22 << v21) | Read(v21)` directly, and for `v15 == 0` it first expands
+    the code with a nested 1/1/3/4-bit prefix.  Our port always decoded a
+    distance symbol, turning a distance of 4 into 37 at offset 9.  Both cases
+    are now implemented per the `ReadSymbol` decompilation.
+
+    The remaining divergence is a single byte at offset 592: the repeat-match
+    symbol `0x54003` selects history slot 2 (distance 127), which copies
+    `00 00 b0` from output positions 463..465, while the OS result has
+    `00 00 00` there (consistent with a distance near 6).  History values
+    and the update rule match the `InternalProcess` assembly, so the repeat
+    index mapping or an earlier rift/source-window distance remains suspect.
+    Real deltas therefore still need `msdelta.dll` delegation; all regression
+    suites pass with the native path for the generated vectors.
