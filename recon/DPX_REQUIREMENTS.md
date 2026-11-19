@@ -979,3 +979,31 @@ Phase D is the genuine open-ended piece.
     recovered and the chained delta still fails.  All existing suites
     remain green and the first real delta stays byte-exact; chained deltas
     continue to use `msdelta.dll`.
+
+    **Compo port, part 28 (chained-delta reproduction).**  Rebuilt a focused
+    harness from KB2959977: CIX id 158 (`wuauclt.exe`) is blob 0 applied to
+    basis id 27, and id 236 (`wusettingsprovider.dll`) is blob 1 applied to
+    basis id 158.  With the OS path disabled, blob 1 fails (`DeltaApply`
+    returns -1); the OS path is byte-exact (0 / 307200), confirming the
+    oracle and basis are correct.  Added `PA30_DEBUG` tracing in `delta.c`.
+
+    The trace shows the 3-bit pre-blob leader IS correct (ImageBase
+    0x10000000, TimeStamp 0x5344BCA1 at bit 3; bit 0 holds the stub-PE
+    0x80000000 / 0x9A25E508).  The first RiftTable at bit 131 does parse as
+    non-empty, but with params 37/0/206 it yields six entries whose `left`
+    values are -2^32 and below, consuming 5289 bits and running past the
+    328-byte pre blob; the CliMetadata flag after it is therefore bogus and
+    the compression map is read as empty.  A bounded scan confirms the real
+    compression RiftTable starts at bit 1644 with IntFormat params 95/3/43,
+    but our `rift_read` rejects its second IntFormat (n1=194 > 0x7E) — the
+    420-bit first IntFormat leaves the next reader at bit 2065, so either a
+    field between the two IntFormats or the first IntFormat's length model
+    is still wrong.
+
+    Grounded fix applied: `IntFormat::InternalFromBitReader`
+    (`msdelta.dll.c:44594`) reads the `n2` large-symbol lengths BEFORE the
+    fill `base` value; `if_read()` had them swapped.  This matters for
+    n2 > 0 (the compression map uses n2 = 3).  Generated PA30 vectors and
+    the first real delta stay byte-exact; chained deltas still need
+    `msdelta.dll`.  Next step: use a debugger oracle on the DLL's pre-blob
+    reader to recover the exact bit layout between bit 131 and bit 1644.

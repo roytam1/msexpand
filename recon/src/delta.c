@@ -124,6 +124,9 @@ static int Pa30ParseHeader(const unsigned char *d, unsigned long n, PA30 *h)
     br_read_blob(&br, h->hash, (unsigned)sizeof(h->hash), &hlen);
     h->hashLen = hlen;
     h->payloadOff = 12 + (br.bitpos >> 3);
+    if (getenv("PA30_DEBUG")) fprintf(stderr,
+        "HDR code=%u flags=%06X target=%u hashAlg=%u hashLen=%u payloadOff=%lu\n",
+        h->code, h->flags, h->targetSize, h->hashAlg, h->hashLen, h->payloadOff);
     if (h->targetSize == 0 || h->targetSize > 0x10000000UL)
         return -1;
     return 0;
@@ -223,13 +226,17 @@ static int if_read(INTFORMAT *f, BITR *br)
     n1 = br_read(br, 8);
     n2 = br_read(br, 8);
     run = br_read(br, 8);
+    if (getenv("PA30_DEBUG")) fprintf(stderr,
+        "  IF n1=%u n2=%u run=%u at bit %lu\n", n1, n2, run, br->bitpos);
     if (n1 > 0x7E || n2 > 0x7E || run > 252u - n1 - n2)
         return -1;
     for (i = 0; i < n1; ++i)
         f->len[i] = (unsigned char)(br_read(br, 4) + 1);
-    base = (unsigned char)(br_read(br, 4) + 1);
+    /* The DLL reads the n2 large-symbol lengths first, then the `base`
+     * value used to fill the remaining slots (InternalFromBitReader). */
     for (i = 0; i < n2; ++i)
         f->len[126 + i] = (unsigned char)(br_read(br, 4) + 1);
+    base = (unsigned char)(br_read(br, 4) + 1);
     if (base > 16)
         return -1;
     for (i = n1; i < 126; ++i)
@@ -269,10 +276,15 @@ static int rift_read(BITR *br, RIFTENTRY **out, unsigned *outn)
     *out = NULL;
     *outn = 0;
     if (br_read(br, 1) == 0)
+    {
+        if (getenv("PA30_DEBUG")) fprintf(stderr, "  RIFT empty at bit %lu\n", br->bitpos);
         return 0;                       /* empty table */
+    }
+    if (getenv("PA30_DEBUG")) fprintf(stderr, "  RIFT nonempty at bit %lu\n", br->bitpos);
     if (if_read(&fa, br) != 0 || if_read(&fb, br) != 0)
         return -1;
     n = br_read_int(br);
+    if (getenv("PA30_DEBUG")) fprintf(stderr, "  RIFT n=%u at bit %lu\n", n, br->bitpos);
     if (n == 0xFFFFFFFFU || n > 0x0FFFFFFFUL)
         return -1;
     tab = (RIFTENTRY *)calloc(n ? (size_t)n : 1, sizeof(*tab));
@@ -284,6 +296,9 @@ static int rift_read(BITR *br, RIFTENTRY **out, unsigned *outn)
         rift += if_read_number(&fb, br);
         tab[i].left = left;
         tab[i].right = left + rift;
+        if (getenv("PA30_DEBUG") && i < 8) fprintf(stderr,
+            "    RIFT[%u] left=%I64d rift=%I64d at bit %lu\n",
+            i, left, rift, br->bitpos);
     }
     *out = tab;
     *outn = n;
@@ -1354,6 +1369,9 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
     rc = br_read_blob(&br, pre, h.targetSize + 1024, &preLen);
     if (rc == 0)
         rc = br_read_blob(&br, patch, h.targetSize + 1024, &patchLen);
+    if (getenv("PA30_DEBUG")) fprintf(stderr,
+        "BLOBS preLen=%u patchLen=%u rc=%d bits=%lu\n",
+        preLen, patchLen, rc, br.bitpos);
     if (rc != 0)
     {
         free(pre);
@@ -1376,32 +1394,51 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
             BITR pb;
             br_init(&pb, pre, preLen);
             pb.bitpos += 64 + 32 + 32;   /* ImageBase, GlobalPointer, TimeStamp */
+            if (getenv("PA30_DEBUG")) fprintf(stderr,
+                "PRE targetinfo at bit %lu\n", pb.bitpos);
             if (rift_read(&pb, &tmp, &tmpN) == 0)
             {
-                if (br_read(&pb, 1))     /* CliMetadata present */
+                int cliPresent;
+                if (getenv("PA30_DEBUG")) fprintf(stderr,
+                    "PRE rift1 n=%u at bit %lu\n", tmpN, pb.bitpos);
+                cliPresent = (int)br_read(&pb, 1);     /* CliMetadata present */
+                if (getenv("PA30_DEBUG")) fprintf(stderr,
+                    "PRE cli=%d at bit %lu\n", cliPresent, pb.bitpos);
+                if (cliPresent)
                 {
+                    unsigned __int64 mask;
+                    unsigned k;
+                    unsigned nset = 0;
                     pb.bitpos += 15 * 32 + 3;
-                    {
-                        unsigned __int64 mask;
-                        unsigned k;
-                        mask = (unsigned __int64)br_read(&pb, 32) |
-                               ((unsigned __int64)br_read(&pb, 32) << 32);
-                        for (k = 0; k < 64; ++k)
-                            if ((mask >> k) & 1)
-                                br_skip(&pb, 32);
-                    }
+                    mask = (unsigned __int64)br_read(&pb, 32) |
+                           ((unsigned __int64)br_read(&pb, 32) << 32);
+                    for (k = 0; k < 64; ++k)
+                        if ((mask >> k) & 1)
+                        {
+                            br_skip(&pb, 32);
+                            ++nset;
+                        }
+                    if (getenv("PA30_DEBUG")) fprintf(stderr,
+                        "PRE cli mask=%016I64x nset=%u at bit %lu\n",
+                        mask, nset, pb.bitpos);
                 }
                 free(tmp);
                 tmp = NULL;
-                rift_read(&pb, &rt, &rn);
+                if (rift_read(&pb, &rt, &rn) == 0 && getenv("PA30_DEBUG"))
+                    fprintf(stderr, "PRE rift2(compression) n=%u at bit %lu\n",
+                            rn, pb.bitpos);
             }
         }
 
         br_init(&pbr, patch, patchLen);
         if (!rt && rc == 0)
             rc = rift_read(&pbr, &rt, &rn);
+        if (getenv("PA30_DEBUG")) fprintf(stderr,
+            "PATCH rift n=%u rc=%d at bit %lu\n", rn, rc, pbr.bitpos);
         if (rc == 0)
             rc = compfmt_read(&cf, &pbr);
+        if (getenv("PA30_DEBUG")) fprintf(stderr,
+            "COMPFMT nSeg=%u rc=%d at bit %lu\n", cf.nSeg, rc, pbr.bitpos);
         if (rc == 0)
         {
             result = (unsigned char *)malloc(h.targetSize);
