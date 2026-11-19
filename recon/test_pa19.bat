@@ -1,10 +1,9 @@
 @echo off
 rem PA19 regression harness.
-rem   The shipped expand.exe delegates PA19 to mspatcha.dll, so the authoritative
-rem   check is that DeltaApply() reproduces the OS patch engine byte-for-byte.
-rem   The in-tree native LZX decoder (PA19_NO_OS=1) is exact for small patches
-rem   but is known to diverge on large multi-chunk ALIGNED blocks; that case is
-rem   reported but does not fail this harness.
+rem   The shipped expand.exe delegates PA19 to mspatcha.dll, but the in-tree
+rem   native decoder (PA19_NO_OS=1) now reproduces the OS patch engine
+rem   byte-for-byte on every known patch, including large multi-chunk ALIGNED
+rem   blocks.  Both paths are checked and must be exact.
 setlocal
 call "C:\Program Files (x86)\Microsoft Visual Studio\VC98\Bin\VCVARS32.BAT" >NUL
 pushd "%~dp0"
@@ -22,7 +21,7 @@ if errorlevel 1 goto :noos
 obj\apply_pa19.exe testdata\danim.dll._p testdata\rtmgdr\danim.dll testdata\danim_ora.dll >NUL
 if errorlevel 1 goto :noos
 
-cl /nologo /Zi /ML /I src /Feobj\test_delta.exe test_delta.c obj\delta.obj obj\lzx.obj obj\mslzx.obj obj\hash.obj kernel32.lib >NUL
+cl /nologo /Zi /ML /I src /Feobj\test_delta.exe test_delta.c obj\delta.obj obj\lzx.obj obj\mslzx.obj obj\pefix.obj obj\hash.obj kernel32.lib imagehlp.lib >NUL
 if errorlevel 1 goto :fail
 
 echo === PA19: OS delegation path (authoritative) ===

@@ -280,3 +280,491 @@ Phase D is the genuine open-ended piece.
     produce byte-identical output, so the oracle is not in question.
     The remaining fault is a newer-era aligned-offset convention absent
     from both the reference source and the DLL decompilations.
+
+    **2026-11-19 follow-up — isolated the exact stream state.** Built a
+    standalone harness around `wine-mspatcha/lzxd_dec.c` (shims under
+    `diag/shim/`, `diag/wine_probe.c`) and added guarded tracing to mslzx.c
+    (both since reverted in the core sources; the harnesses remain in
+    `diag/`). With PA19_NO_OS=1 the native decoder is exact on
+    `jsproxy.dll._p` (0/12288) and first diverges on `danim.dll._p` at
+    output 2925 (0xB6D) — exactly the NT-trace location:
+
+        PRE pos=2925 slot=42 ebits=14 bitsleft=24 bitbuf=0B0D7700
+        M   2925 blk=2 sym=599 slot=42 ebits=14 extra=707 alsym=2
+                  len=11 off=1054232        (oracle needs 1054208)
+
+    The whole patch is a single ALIGNED block (type 2, size 1054208) split
+    into 29+ LZXD chunks of ~0x8000 output bytes each; the first mismatch is
+    in chunk 0, so it is not a chunk-boundary problem. Oracle/source bytes
+    confirm the DLL copies source[2925] (distance == seed length ==
+    old-file-size 1054208, a retained-range-style identity copy), while we
+    copy source[2901].
+
+    Verified from `mspatcha.dll.lst` that the DLL's tables are identical to
+    ours: `dec_extra_bits[42]=17` (table at 0x401F18DC onwards, `0x11` from
+    slot 33), `MP_POS_minus2[42]=0xFFFFE=1048574` (table at 0x401F7560),
+    aligned code lengths (2,5,2,5,3,5,2,5). The aligned decode assembly at
+    `401F721D..401F72E3` reads `bitbuf >> (35-17)` = 14 extra bits and then
+    adds the Huffman-decoded aligned symbol — the same formula mslzx.c uses.
+    No retain/ignore ranges exist in this patch (extraCount=732 is parsed but
+    not the cause). Other slot-42 matches in the same stream read extra=704
+    (bitbuf `0x0B01...`) and decode correctly, so the stream genuinely holds
+    `0x0B0D...`/707 at this point and the DLL still yields 704.
+
+    Tested (via an `MSLZX_ALIGN_VARIANT` switch, since reverted): clearing
+    the low 2 bits of the 14-bit extra gives 29823/1054208 (down from
+    44446) but breaks earlier slot-14 matches; clearing low 3 bits gives
+    29047; clamping any distance > seedLen to seedLen gives 20786. None is
+    byte-exact, so the true convention is still unresolved. The authoritative
+    OS-delegation path is covered by `test_pa19.bat` (0 mismatches on both
+    jsproxy and danim).
+
+    `diag/` also contains `wine_probe.c`/`build_diag.bat` (standalone Wine
+    LZXD oracle — note it is itself only approx. 26837/1054208 correct on
+    danim, so the OS DLL output remains the only trusted oracle) and
+    `dumpbytes.c` for byte-range dumps.
+
+    **2026-11-19, part 2 — the aligned-extra lead was a red herring; the real
+    bug is in the Huffman reader.** Re-located the exact patch byte for the
+    2925 match (dataOff=2282, chunk 0 at +2, chunkoff=682 → byte 2965 holds
+    the low 6 bits of the 14-bit extra). Flipping it 0x0D→0x01 (extra 707→
+    704, aligned-sym bits unchanged) made the OS DLL reject the patch, so
+    the stream really does contain 707 there. No aligned-distance convention
+    change can be correct in isolation.
+
+    The productive experiment was `diag/mslzx_hybrid.c` (built by
+    `diag/build_hybrid.bat`): replace the wimlib subtable decoder for the
+    MAIN (and LEN) code with a single full 16-bit canonical table and,
+    crucially, drop `bitstream_ensure_bits(max_codeword_len)` from the symbol
+    read, as the DLL's decompiled `decode_aligned_or_verbatim_block` peeks
+    directly from its 32-bit bit cache. Result on `danim.dll._p`:
+
+        baseline (wimlib subtables + ensure(16)) : 44446 / 1054208 wrong
+        full main table, no pre-load             :    89 / 1054208 wrong
+        full len table alone (main unchanged)    : 916712 / 1054208 wrong
+
+    so the MAIN symbol decode is the critical path; the same change makes
+    `jsproxy.dll._p` go from 0 to 12 wrong bytes. A Wine-style 32-live-bit
+    reader made no further difference (90 wrong), and changing table_bits
+    to the DLL's 10/8 made none either. With `MSLZX_HYBRID=2` (full main
+    only) the 12 jsproxy errors persist.
+
+    Crucially, 90 of the 91 remaining danim errors are at offsets where the
+    oracle differs from the source (genuine patch-introduced bytes), while
+    the subtable decoder happens to reproduce those but gets ~44k other
+    bytes wrong. So the two decoders are complementary, not one strictly
+    better: each resolves a different subset of the symbol stream. A true
+    byte-exact native fix needs to explain why the two main-code decoders
+    disagree at those specific symbols — likely a bit-drift at the exact
+    Huffman codeword boundary that the full table absorbs differently.
+
+    Because the full-table change regresses the byte-exact jsproxy case, it
+    was NOT merged into `src/mslzx.c`. The authoritative OS path remains
+    byte-exact (verified by `test_pa19.bat`). Next concrete step: use the
+    hybrid build to dump the main-code lens array and the exact (len,code)
+    pair at output 313 / 328, then compare the two decoders' codeword-length
+    consumption symbol by symbol.
+
+    **2026-11-19, part 3 — ported the original patch-engine LZXD decoder.**
+    A private, untracked reference source tree for the patch engine's LZXD
+    decoder was available locally. Previous sessions only compiled it as a
+    black-box oracle; comparing it directly to our port settled the table
+    question:
+
+    * the bit-buffer initialiser preloads TWO words into the 32-bit cache
+      (`bitbuf = word0<<16 | word1`, `bitcount = 16`), confirming that peeks
+      past `bitcount` still see correct stream data;
+    * the main/length Huffman decoders peek the top 10/8 bits with NO
+      pre-fill, walk negative subtable references, then refill only AFTER
+      the codeword is consumed;
+    * the code-length reader is a 20-symbol precode with 17/18/19 run codes;
+    * the aligned-offset decode is byte-for-byte our existing formula
+      (`extra = getbits(extra_bits-3); base + (extra<<3) + aligned_sym`).
+      The 707/704 mystery is therefore NOT a convention difference.
+
+    I ported these semantics verbatim into `src/mslzx.c` (32-live-bit cache,
+    canonical table builder, post-consumption refill, separate
+    verbatim/aligned extra-bit paths). Result:
+
+        native mslzx path, danim.dll._p : 95 / 1054208 wrong  (was 44446)
+        native mslzx path, jsproxy._p   :  0 / 12288    wrong  (unchanged)
+        OS delegation path              :  0 / both             (unchanged)
+
+    All other suites (XPRESS 40/40, LZX, LZMS 6/6) still pass. The faithful
+    port still reads extra=707 at output 2925 and produces distance 1054232,
+    while the 2009 system mspatcha.dll produces 1054208 — so the last 95 bytes
+    are a genuine version difference between the older reference engine and
+    the newer DLL, not a porting error. A heuristic clamp of aligned distances
+    to the seed size reduces 95 to 86 (all remaining errors then fall at
+    patch-literal offsets >= 73980), but was not kept: it is not grounded in
+    either source. The OS-delegation path remains the byte-exact default.
+
+    **Full 17-patch ground truth (2026-11-19, part 4).** The SFX hotfix was
+    extracted twice: once by running it (patch engine active) and once by
+    direct extraction. The `_sfx_manifest_` in the direct extraction maps each
+    `*.dll._p` patch + `RTMGDR\` source to its `RTMQFE\` output, and the SFX run
+    produces those RTMQFE files. Verified with `_sfx_.dll` and `mspatcha.dll`
+    via `ApplyPatchToFileA`: both produce byte-identical output for danim, and
+    the OS-delegation path matches the SFX RTMQFE files byte-for-byte on all
+    17 patches.
+
+    Testing the native decoder against all 17 real RTMQFE outputs
+    (`diag/allpatches.bat`) showed the earlier "95-byte gap" was only the
+    visible tip:
+
+        exact (0 wrong) : browseui, cdfview, jsproxy, msrating, shdocvw, shlwapi
+        small gap       : inseng 9, mshtmled 17, mstime 18, danim 95
+        large gap       : pngfilt 6961, dxtmsft 157681, dxtrans 138072,
+                          iepeers 177644, mshtml 2522999, urlmon 397373,
+                          wininet 513721
+
+    The six exact cases are header-only patches (38-byte `_p` files, no LZXD
+    stream) plus jsproxy (single LZXD chunk). Every patch with a multi-chunk
+    LZXD stream is broken. The aligned-offset 2925 discrepancy is therefore a
+    symptom of multi-chunk handling, not an isolated convention difference —
+    the native decoder zero-fills after the first chunk's input runs out
+    instead of continuing into the next chunk as the DLL does. Attempts to
+    reset the bit cache at 32K output boundaries made results worse; the real
+    chunk-framing contract is still unresolved. The OS-delegation path remains
+    the only byte-exact one (all 17 patches).
+
+    **Chunk-boundary trace (2026-11-19, part 5).** Read the chunk loop from
+    the reference source (`patchlzx.c`): each chunk reads a 2-byte size,
+    calls `LZX_Decode` with `request = min(remaining, 0x8000)`, and that call
+    resets the bit cache from the chunk payload with 4 bytes of padding
+    (`end_input_pos = src + size + 4`). `ActualSize` advances the output
+    pointer and reduces `remaining`. danim has 33 chunks (sizes
+    758,16,488,...,4); chunk 0..31 request 32768 bytes, chunk 32 requests
+    5632. Traced the native decoder against the SFX oracle:
+
+    * first divergence is at output 2925, inside chunk 0 (aligned match,
+      extra 707 -> distance 1054232 instead of 1054208);
+    * first divergence at/after the chunk 0 boundary is output 32768, the
+      very first byte of chunk 1: oracle = A4, native = 5A.
+    * oracle[32768..] = A4 E9 35 5A 44 matches source[32768..] exactly —
+      an identity copy (distance == seed length), the same pattern as 2925.
+    * native chunk 1 decodes main symbol 263 (slot 0, length header 7) as a
+      distance-1 long match, i.e. a run of chunk 0's last byte (5A) — so the
+      first symbol of chunk 1 is decoded differently by the DLL.
+
+    Tested every plausible bit-cache model against the RTMQFE oracle:
+    per-chunk reset with zero padding, per-chunk reset with the real next-4
+    stream bytes as padding, continuous cache with repointed input, fully
+    continuous cache over concatenated payloads, and chunk-start offsets
+    -2/0/+1/+2. All either fail outright or are worse than the simple
+    "chunk 0 with zero-fill" model (95 bytes wrong on danim). Notably the
+    oracle's identity copies at 2925 and 32768 suggest the DLL may apply a
+    post-decode retain/copy pass, but no retain ranges were found in the
+    header. The exact chunk-boundary contract remains unresolved; OS
+    delegation is still the only byte-exact path (all 17 patches).
+
+    **Instrumented bit-buffer / match trace (2026-11-19, part 6).** Added
+    symbol-level tracing (`diag/mslzx_trace.c`) that logs, for every symbol,
+    the output position, main-table index, bitbuf/bitcount before and after,
+    and for matches the slot, length, distance and repeat-offset history.
+    Compared against the SFX RTMQFE oracle with `TRACE_LO/HI` windows:
+
+    * zero-fill model (best, 95 wrong on danim): 9 errors in chunk 0,
+      **0 errors in chunk 1**, 86 in later chunks. The first chunk-boundary
+      symbol (output 32768) decodes with an exhausted cache
+      (`bb=00000000 cnt=-16`) to main symbol 263 -> an identity match
+      (`dist=1054208, len=35`), which reproduces the oracle exactly.
+    * per-chunk-reset model: chunk 1 starts with `bb=0F71674B cnt=16`;
+      main-table index 61 yields symbol 263 -> a distance-1 long match
+      (`len=14772`), i.e. a run of chunk 0's last byte (5A) — wrong.
+    * by output 73963 the zero-fill model's bitcount has drifted to
+      **-5901**; it still emits identity matches (dist=1054208) because
+      `main_table[0]` maps to one. These match the source but miss the
+      patch-introduced literals the DLL emits there.
+
+    So the DLL's chunk-1 output is an identity copy, which our exhausted-cache
+    path happens to reproduce, but its later chunks contain real decoded
+    patch literals our zero-fill cannot produce. The per-chunk reset reads
+    different bits and gets chunk 1 wrong outright. This narrows the gap to
+    how the DLL refills the bit cache from the remaining compressed stream
+    after chunk 0 — not the symbol tables or the aligned-distance formula.
+    OS delegation remains the only byte-exact path (all 17 patches).
+
+    **Root cause identified — PE source transformation (2026-11-19, part 7).**
+    The "extraCount = 732" field parsed in `Pa19Apply` is not extra blocks: it
+    is `RiftTable.RiftEntryCount`. The apply path in the reference source
+    (`patchapi.c:3453-3466`) does:
+
+        if (OldFileInfo->RiftTable.RiftEntryCount != 0)
+            TransformOldFileImageForPatching(ExtendedOptionFlags,
+                                             OldFileMapped,   // MODIFIED IN PLACE
+                                             OldFileSize, NewFileResTime,
+                                             &RiftTable);
+        CreateNewFileFromPatchData(OldFileMapped, ...);  // LZXD seeds from this
+
+    `TransformCoffImage` applies seven in-place PE transforms
+    to the source before LZXD: MarkNonExe, Relocations, Imports, Exports,
+    RelativeJmps, RelativeCalls, Resources. The patch stream was generated
+    against that transformed source, so the DLL's LZXD window is seeded with
+    transformed bytes. Our native decoder seeds with the raw `rtmgdr` file and
+    skips every one of these transforms — which is why its distance mapping
+    diverges and why it misses the patch-introduced literals. Wine's mspatcha
+    has the same gap (`FIXME: special processing of 32-bit executables not
+    implemented`), which explains why it fails identically.
+
+    RIFT counts measured per patch (`diag/riftall.bat`): jsproxy 1, pngfilt 44,
+    inseng 70, mshtmled 184, dxtmsft 196, wininet 381, urlmon 443, mstime 450,
+    danim 732, mshtml 1951. Error counts do not track RIFT count alone (mstime
+    has 450 entries but only 18 wrong bytes), so the transform's *content*,
+    not just its size, drives the divergence. Implementing the PE transforms
+    (a ~220 KB reference module) is the remaining work for a byte-exact native
+    path. OS delegation remains byte-exact on all 17 patches.
+
+    **PE-transform port attempt (2026-11-19, part 8).** Built
+    `diag/rifttransform.c`: parses the RiftTable (uvli delta-old + svli
+    delta-new, accumulated), maps old RVA -> new RVA by binary search with
+    nearest-preceding fallback, and applies the i386 E8/E9 relative
+    call/jump adjustment across the executable section. For danim the patch's
+    ExtendedOptionFlags are 0x300 (no NO_* transform bits set, so all
+    transforms are enabled); the RIFT table has 732 entries with non-zero
+    displacements (e.g. old 0x14E4 -> new 0x1770, +652). The transform rewrote
+    4195 source bytes (1842 E8/E9 instructions).
+
+    Testing against the SFX RTMQFE oracle made the native decode **worse**:
+    95 -> 4284 wrong bytes on danim. Bytes around output 2925 are unchanged
+    by the transform, and the raw source already reproduces 99.99% of the LZXD
+    output — so the LZXD stream is clearly generated against a source that is
+    very close to the *raw* file, not one with thousands of rewritten E8/E9
+    targets. Either the port is incomplete (the hint map that suppresses
+    transforms at relocation targets / non-exe regions is not implemented),
+    or these transforms are not what drives the remaining 95 bytes.
+
+    Conclusion: the PE-transform lead is real at the API level but the
+    minimal E8/E9 port does not close the gap. The remaining work is either a
+    faithful port of all seven transforms including the hint map, or a
+    different explanation for the 95 bytes. OS delegation remains byte-exact
+    on all 17 patches.
+
+    **Full PE-transform attempt with hint map (2026-11-19, part 9).** Extended
+    the port to `diag/rifttransform2.c`: builds the hint map (PE header, all
+    16 data directories, all non-exec sections, and HIGHLOW relocation
+    targets), applies the relocation HIGHLOW VA adjustments and rebuilds the
+    suppression, then applies E8/E9 relative call/jump transforms with hint
+    suppression. danim: extflags 0x300, 732 RIFT entries, 3961 bytes changed.
+    Result against the RTMQFE oracle: **7101 wrong bytes**, worse than both
+    the E8/E9-only port (4284) and the untouched raw source (95).
+
+    This is a decisive negative result for the PE-transform hypothesis as the
+    driver of the remaining 95 bytes: the LZXD stream is demonstrably encoded
+    against a source nearly identical to the raw file, and applying the
+    documented transforms moves it further away. The remaining explanation is
+    a detail of the bit-cache / chunk-framing that has so far resisted the
+    source-level ports. OS delegation remains byte-exact on all 17 patches.
+
+    **Precise bit-state trace at output 2925 (2026-11-19, part 10).** Using
+    `diag/mslzx_trace.c` with `TRACE_LO=2920 TRACE_HI=2935`, the exact decode
+    state on the native path is:
+
+        SYM pos=2925 raw=599 mainidx=412 bb=67085800 cnt=5 -> c=343 bb2=842C35DC cnt2=14
+        LENHDR hdr=7 bb=842C35DC cnt=14
+        LENSYM 2 bb=0B0D7700 cnt=8
+        MATCH m=42 len=11 dist=1054232 bb2=7763C000 cnt2=8
+
+    So the main symbol (599 -> slot 42) and the length symbol (2 -> total
+    length 11) are identical to the DLL's requirements; the divergence is
+    purely in the 14-bit extra-field read that follows `LENSYM`. With
+    `bb=0x0B0D7700`, `getbits(14)` returns 707, giving distance 1054232; the
+    DLL must read 704 for distance 1054208. Both the reference decoder source
+    and both DLL decompilations specify `extra = bitbuf >> (35-17)` (14 bits)
+    followed by `fillbuf(14)`, so there is no source-visible convention that
+    yields 704. The bit count at the read is only 8, meaning 6 of the 14 bits
+    come from below the "valid" region — in the reference design those are live
+    stream bits from the preloaded word, and they are what produce 707.
+
+    This is the most tightly localized statement of the remaining gap: the
+    DLL extracts a different 14-bit value from the same bit-cache window than
+    every source-derived decoder. OS delegation remains byte-exact on all 17
+    patches.
+
+    **DEFINITIVE: direct debugger trace of the reference DLL (2026-11-19,
+    part 11).** Built `diag/dbgprobe.c`, a Win32 debugger that loads the
+    workarea-root `mspatcha.dll` via `ApplyPatchToFileByBuffers` and sets
+    breakpoints at the extra-bits read (RVA 0x7248, `shr edi,cl`) and at
+    the final distance computation (RVA 0x72E6, `add [ebp-8],edi`). This
+    observes the DLL's true internal state rather than inferring it:
+
+        hit 0 (output 0):    EDI(bitbuf)=0B011800 CL=18 -> dist=1054208 edi=2
+        hit 3 (output 2925): EDI(bitbuf)=0B0D7700 CL=18 -> dist=1054232 edi=2
+
+    This OVERTURNS the central assumption of parts 1-10: the DLL reads the
+    SAME bitbuf (0x0B0D7700), the SAME 14 bits (707 -> CL=18 shift), the SAME
+    aligned symbol (edi=2), and computes the SAME distance (1054232) as our
+    decoder. There is NO different "704" convention — the extra bits are
+    identical in both engines. The earlier "704" inference was wrong.
+
+    Additional confirmations from the debugger:
+    * the DLL's source buffer is NOT modified during apply (0 bytes changed),
+      ruling out the PE-transform hypothesis conclusively;
+    * the debugger-driven run's output is byte-identical to the SFX RTMQFE
+      oracle (0 differences), so the trace is of the correct decode.
+
+    Since dist=1054232 with a 1054208-byte seed and output pos 2925 maps to
+    source[2901] (=0x0D), yet the DLL emits 0x0E (=source[2925]), the
+    divergence is in the MATCH COPY / window positioning stage, not the bit
+    cache or distance read. Either the DLL's dictionary window is seeded /
+    indexed differently than `window[W-seedLen .. W-1]` + wraparound, or a
+    later stage rewrites those bytes. This is now the precise place to look.
+
+    **FINAL: DLL window trace solves it (2026-11-19, part 12).** Built
+    `diag/dbgwin.c` / `diag/dbgseed.c`: a Win32 debugger that breaks inside
+    the DLL's match-copy loop (RVA 0x7514, `mov bl,[edi]`) and reads the actual
+    window byte, then dumps the dictionary seed region. Results:
+
+        wbase = 0x02...9B8; seed at wbase + 3140096 (= W 4194304 - seedLen 1054208)
+        seed[0..] = MZ... (source[0])                     -- seed start correct
+        output 2901: srcoff=2897 byte=0D (= source[2897])
+        output 2925: srcoff=3142997 byte=0E               -- DLL reads 0x0E here
+        raw source[2901] = 0x0D
+
+    The DLL's source index (3142997 = (2925-1054232) & 0x3FFFFF) is IDENTICAL
+    to our port's. The difference is the WINDOW CONTENT: at seed index 2901
+    the DLL holds 0x0E, while the raw file has 0x0D. Dumping seed[2880..2943]
+    showed a repeating `D8 0E 3E 5A / 0B 0F 3E 5A` pattern where the raw file
+    has `74 0C 3E 5A / A7 0C 3E 5A / ...` — i.e. the DLL's dictionary is a
+    TRANSFORMED copy of the source (PE relocation / RiftTable normalization).
+
+    This is consistent with the reference apply path: `patchapi.c:3453` calls
+    `TransformOldFileImageForPatching` on a COPY of the old file before
+    `CreateNewFileFromPatchData` seeds the LZXD dictionary. The earlier
+    "source buffer unchanged" observation was on the caller's buffer, not the
+    DLL's internal copy. The patch stream is encoded against that transformed
+    seed. Our native decoder seeds with the raw `rtmgdr` file, so every match
+    that references a transformed byte (notably the aligned identity-copies)
+    is wrong — exactly the 95 bytes on danim.
+
+    Therefore the fix is NOT in the bit cache, distance read, window layout,
+    or copy formula (all confirmed identical) and NOT post-decode rewriting:
+    it is the PRE-DECODE PE SOURCE TRANSFORM. Earlier transform ports failed
+    because they implemented the wrong transform set / hint-map semantics.
+    OS delegation remains byte-exact on all 17 patches.
+
+    **Retained-range / growth-list investigation (2026-11-19, part 13).**
+    Traced the complete DLL apply pipeline in `mspatcha.dll.c`:
+    `SaveRetainRanges` (1134) packs raw old-file bytes into a buffer;
+    `ApplyRawLzxPatchToBuffer` (2412) seeds LZXD from the growth list
+    (`{oldOffset, insertSize, ...}` triples, one `LZX_DecodeNewGroup` per
+    group); `CreateNewFileBufferFromPatchData` (1245) after decode does, for
+    each retain range, `memcpy(output + OffsetInNewFile, saved, LengthInBytes)`.
+
+    Hard finding: **danim has retainCount = 0** (verified by instrumenting
+    `Pa19Apply`, and the header layout matches Wine's `pa19.c:362-407`). So the
+    retained-range pipeline is a no-op for this patch and cannot explain the
+    95 mismatches. Its groupCount is 1 with a full-file insert — also already
+    matched by our decoder. The 732 field is the RIFT table (`unknown_count`
+    in Wine, which Wine outright rejects), not extra blocks.
+
+    Also tested decisively this round: feeding the DLL's dumped transformed
+    seed into our decoder gives **36,676** wrong bytes (vs 95 with raw), and
+    only 3 of the 95 raw-seed errors sit at seed-transform positions. So the
+    seed transform is not a drop-in fix either. E8 on/off makes no difference.
+
+    Conclusion: neither retained ranges, growth-list grouping, the PE seed
+    transform, nor E8 explains the remaining 95 bytes. The bit cache, distance
+    read, window layout and copy formula are all confirmed byte-identical to
+    the DLL. OS delegation remains byte-exact on all 17 patches; the native
+    fallback stays at 95/1054208. No source changes were made this round.
+
+    Source-level details are intentionally kept out of the tracked tree.
+
+    **EXTRALONGMATCHES + per-chunk reset breakthrough (2026-11-19, part 14).**
+    The part 13 conclusion was wrong. The native decoder was NOT faithfully
+    decoding the LZXD stream after 32K. Two modelling errors masked each other:
+
+    1. **Extra-long matches.** PA19 streams carry `EXTRALONGMATCHES`: when a
+       match length decodes to exactly MAX_MATCH (257), a 9-bit extension
+       follows (with nested 9/6/3-bit continuations, see the reference
+       decoder). The native port did not implement this, so any 257-byte
+       match desynced the stream from that point onward.
+    2. **Per-chunk bit-cache reset.** Each 32K output chunk is its own
+       `[u16 size][payload]` unit, and the decoder re-initialises the 32-bit
+       bit cache (2 preloaded words, `bitcount = 16`) at the start of every
+       chunk. Huffman trees and the LRU repeat offsets persist across chunks;
+       only the bit cache resets. The native port had been decoding the whole
+       file from chunk 0 and zero-filling on exhaustion (the "95 errors"
+       state), which coincidentally copies source bytes for the ~99.99% of
+       the target that is unchanged.
+
+    With both corrected, the decoder consumes a real, byte-exact stream. A
+    reference build of the full LZX decoder source, driven by the same
+    per-chunk model, reproduces the ground truth
+    **bit-for-bit (0 / 1,054,208)** when given:
+      - the per-chunk driver above,
+      - `EXTRALONGMATCHES`, and
+      - the DLL's pre-decode transformed seed.
+
+    Error progression on danim makes the diagnosis unambiguous:
+      - zero-fill from chunk 0 (old native state): 95 wrong
+      - per-chunk, no extra-long matches: 934,203 wrong (desync at 32K)
+      - raw-seed, per-chunk + extra-long: 26,837 wrong
+      - transformed-seed, per-chunk + extra-long: **0 wrong**
+
+    So the remaining gap is entirely the **pre-decode PE source transform**,
+    now confirmed necessary and, with a correct decoder, sufficient to reach
+    exactness. The transform is deterministic but large: on danim it rewrites
+    37,053 bytes in 17,556 regions, distributed as
+      - header: 4 bytes (COFF TimeDateStamp + recomputed PE checksum),
+      - `.text`: 7,405 bytes (relative jmp/call canonicalisation etc.),
+      - `.reloc`: 29,644 bytes (relocation-table canonicalisation),
+      - `.data` / `.rsrc`: 0 bytes.
+    Imports/exports live in `.text` here; resources are untouched for danim.
+    Porting this pipeline (normalize + relocations + relative jmps/calls +
+    imports/exports + checksum, driven by the patch's transform options and
+    RIFT table) is the only path to a byte-exact native decoder.
+
+    **Seed transform reproduced exactly (2026-11-19, part 15).** Built a
+    standalone reference harness from the private PE-transform source and
+    confirmed it reproduces the DLL's pre-decode seed **bit-for-bit
+    (0 / 1,054,208 bytes differ)** for danim. Inputs, all parsed from the
+    PA19 header we already read:
+      - `TransformOptions = ExtendedOptionFlags` (0x00000300 for danim),
+      - `NewFileCoffBase = 0x5A320000`,
+      - `NewFileCoffTime = NewFileTime - delta = 0x4ABC59CA`,
+      - RIFT table = the per-file `extraCount` field (732 entries of
+        `{OldFileRva, NewFileRva}`, decoded as uvar `DeltaPos` then svar
+        `DeltaNew`), which `delta.c` already walks but discards.
+    The transform runs `NormalizeCoffImage` (timestamp + checksum) then
+    `TransformCoffImage` (MarkNonExe, relocations, imports, exports,
+    relative jmps/calls, resources; new-style branch because
+    `TransformOptions & 0x300`), driven by the RIFT table.
+
+    So the full native pipeline is now fully characterised and provably
+    exact:
+        raw source -> [PE transform + RIFT] -> seed
+                   -> [per-chunk LZXD + EXTRALONGMATCHES] -> target.
+    Port order: (1) decoder model in `mslzx.c`, validated with the
+    reference seed; (2) the PE transform as a new tracked module,
+    validated against the captured seed; (3) wire `delta.c` to parse the
+    RIFT/options and call the transform.
+
+    **Native PA19 is byte-exact on all 17 patches (2026-11-19, part 16).**
+    Landed the full pipeline in tracked code:
+
+      - `src/mslzx.c`: per-32K-chunk bit-cache reset with persistent Huffman
+        trees / LRU repeat offsets, and extra-long-match extension.  This is
+        the decoder model the reference patcher actually uses.
+      - `src/pefix.c` + `src/pefix.h`: the pre-decode PE seed transform
+        (NormalizeCoffImage timestamp/checksum/rebase plus TransformCoffImage
+        relocations, relative branches, imports, exports and resources,
+        driven by the patch RIFT map).  Validated bit-for-bit against the
+        captured reference seed (0 / 1,054,208 differ).
+      - `src/delta.c`: parses the RIFT map, `NewFileCoffBase`,
+        `NewFileCoffTime` and `ExtendedOptionFlags`, prepares a transformed
+        copy of the source, and seeds LZXD from it.
+
+    Results with OS delegation disabled (`PA19_NO_OS=1`), native path only,
+    versus the SFX-generated RTMQFE ground truth:
+        browseui 0, cdfview 0, danim 0, dxtmsft 0, dxtrans 0, iepeers 0,
+        inseng 0, jsproxy 0, mshtml 0, mshtmled 0, msrating 0, mstime 0,
+        pngfilt 0, shdocvw 0, shlwapi 0, urlmon 0, wininet 0.
+    The OS-delegation path is unchanged and still exact.  XPRESS (40/40),
+    LZX and LZMS (6/6) suites all pass.
+
+    Lesson: the old "95 residual bytes" were an artifact of decoding the whole
+    file from chunk 0 with zero-fill; the real defects were the missing
+    per-chunk reset, missing extra-long matches, and the unapplied seed
+    transform, all three now addressed.

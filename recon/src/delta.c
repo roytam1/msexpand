@@ -4,6 +4,7 @@
 #include "lzx.h"
 #include "mslzx.h"
 #include "hash.h"
+#include "pefix.h"
 
 /* ---------- LSB-first bit reader over little-endian byte stream ---------- */
 typedef struct tagBITR
@@ -713,6 +714,7 @@ typedef struct tagP19SECTION
     unsigned long targetCrc;
     unsigned long compressedLen;
     unsigned long extraCount;
+    unsigned long *rift;            /* 2*extraCount {OldFileRva,NewFileRva} */
     unsigned long retainCount;
     P19RANGE ignore[16];
     P19RANGE retain[16];
@@ -848,8 +850,8 @@ static int Pa19Apply(const unsigned char *d, unsigned long n,
     unsigned long windowBits = 15;
     int windowExplicit = 0;
     unsigned long k;
-    unsigned long coffTime = 0;
-    unsigned char *normalizedSrc = NULL;
+    unsigned long coffTime = 0, coffBase = 0, coffTimeVal = 0;
+    unsigned char *preparedSrc = NULL;
     int hasExtraFlags = 0;
 
     if (Pa19ApplyViaOS(d, n, src, srcLen, out, outLen) == 0)
@@ -873,8 +875,13 @@ static int Pa19Apply(const unsigned char *d, unsigned long n,
     }
     if (!(flags1 & 0x00040000UL))
     {
-        p += 2;                     /* newFileCoffBase */
-        p = uvar(p, end, &k);       /* newFileCoffTime */
+        coffBase = (unsigned long)rd16(p) << 16;   /* newFileCoffBase */
+        p += 2;
+        {
+            long d;
+            p = svar(p, end, &d);                   /* NewFileTime - CoffTime */
+            coffTimeVal = (unsigned long)((long)coffTime - d);
+        }
     }
     if (!(flags1 & 0x00400000UL))
     {
@@ -937,11 +944,23 @@ static int Pa19Apply(const unsigned char *d, unsigned long n,
             }
         }
         p = uvar(p, end, &s->extraCount);
-        for (j = 0; j < s->extraCount; ++j)
+        if (s->extraCount)
         {
-            unsigned long extraOff, extraLen;
-            p = uvar(p, end, &extraOff);
-            p = svar(p, end, (long *)&extraLen);
+            unsigned long prevOld = 0, prevNew = 0;
+            s->rift = (unsigned long *)malloc(
+                (size_t)s->extraCount * 2 * sizeof(unsigned long));
+            if (!s->rift) return -1;
+            for (j = 0; j < s->extraCount; ++j)
+            {
+                unsigned long dpos;
+                long dnew;
+                p = uvar(p, end, &dpos);
+                p = svar(p, end, &dnew);
+                prevOld += dpos;
+                prevNew = (unsigned long)((long)prevNew + dnew);
+                s->rift[2 * j] = prevOld;
+                s->rift[2 * j + 1] = prevNew;
+            }
         }
         if (flags1 & 0x40000000UL)
         {
@@ -988,25 +1007,27 @@ static int Pa19Apply(const unsigned char *d, unsigned long n,
         return -1;
     memset(result, 0, (size_t)newSize);
 
-    /* mspatcha normalizes the source PE image before decoding: the new
-     * COFF timestamp carried in the patch header is written into the
-     * source's PE TimeDateStamp field, and the LZXD stream then matches
-     * against that normalized copy. */
-    if (hasExtraFlags && coffTime && srcLen >= 0x40)
+    /* The reference patcher prepares a *copy* of the old-file image before
+     * seeding LZxD: it normalises PE headers (timestamp/checksum/rebase) and,
+     * when the patch carries a RIFT map, applies the PE transform (relocs,
+     * relative branches, imports, exports).  The stream was encoded against
+     * that transformed image, so seed the decoder with the same bytes. */
+    if (srcLen)
     {
-        unsigned long pe = rd32(src + 0x3C);
-        if (pe + 12 <= srcLen && memcmp(src + pe, "PE\0\0", 4) == 0)
+        preparedSrc = (unsigned char *)malloc((size_t)srcLen);
+        if (!preparedSrc)
         {
-            normalizedSrc = (unsigned char *)malloc((size_t)srcLen);
-            if (normalizedSrc)
-            {
-                unsigned char *t = normalizedSrc + pe + 8;
-                memcpy(normalizedSrc, src, (size_t)srcLen);
-                t[0] = (unsigned char)(coffTime & 0xFF);
-                t[1] = (unsigned char)((coffTime >> 8) & 0xFF);
-                t[2] = (unsigned char)((coffTime >> 16) & 0xFF);
-                t[3] = (unsigned char)((coffTime >> 24) & 0xFF);
-            }
+            free(result);
+            return -1;
+        }
+        memcpy(preparedSrc, src, (size_t)srcLen);
+        if (PeFixPrepareSeed(preparedSrc, srcLen, flags1, flags2,
+                             coffBase, coffTimeVal,
+                             secs[0].rift, secs[0].extraCount) < 0)
+        {
+            free(preparedSrc);
+            free(result);
+            return -1;
         }
     }
 
@@ -1052,7 +1073,7 @@ static int Pa19Apply(const unsigned char *d, unsigned long n,
                 if (MsLzxDecompressSeededMulti(chunks, sizes, nchunks,
                                                result + outOff, totalOut,
                                                (int)windowBits,
-                                               s->groups[1] ? (normalizedSrc ? normalizedSrc : src) + s->groups[0] : NULL,
+                                               s->groups[1] ? (preparedSrc ? preparedSrc : src) + s->groups[0] : NULL,
                                                s->groups[1]) != 0)
                 {
                         free((void *)chunks); free((void *)sizes); free(result);
@@ -1064,7 +1085,7 @@ static int Pa19Apply(const unsigned char *d, unsigned long n,
             {
                 /* header-test patch: target is just the (normalized) source */
                 if (totalOut > srcLen) { free((void *)chunks); free((void *)sizes); free(result); return -1; }
-                memcpy(result + outOff, normalizedSrc ? normalizedSrc : src, (size_t)totalOut);
+                memcpy(result + outOff, preparedSrc ? preparedSrc : src, (size_t)totalOut);
                 outOff += totalOut;
             }
             else
@@ -1077,7 +1098,9 @@ static int Pa19Apply(const unsigned char *d, unsigned long n,
         }
         comp += s->compressedLen;
     }
-    free(normalizedSrc);
+    free(preparedSrc);
+    for (i = 0; i < sectionCount; ++i)
+        free(secs[i].rift);
     (void)windowExplicit;
     (void)crc;
     *out = result;
