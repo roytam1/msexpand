@@ -489,9 +489,21 @@ static int compfmt_read(COMPFMT *f, BITR *br)
     f->nSeg = br_read_int(br);
     if (f->nSeg == 0 || f->nSeg > 32)
         return -1;
-    /* Boundaries are absolute output offsets in this stream. */
-    for (i = 0; i < f->nSeg; ++i)
-        f->boundary[i] = (unsigned)br_read_int(br);
+    /* Boundaries are cumulative endpoints in the combined [source][output]
+     * buffer, encoded as successive deltas.  The first delta is the source
+     * length; convert each accumulated endpoint to an output-relative
+     * switch offset by subtracting it. */
+    {
+        unsigned long acc = 0, base = 0;
+        for (i = 0; i < f->nSeg; ++i)
+        {
+            unsigned long d = br_read_int(br);
+            acc += d;
+            if (i == 0)
+                base = acc;
+            f->boundary[i] = (unsigned)(acc - base);
+        }
+    }
     for (i = 0; i < 39; ++i)
         f->metaLen[i] = (unsigned char)br_read(br, 4);
     if (huff_build(&meta, f->metaLen, 39, 15) != 0)
@@ -756,6 +768,11 @@ static int compo_decompress(BITR *br, const COMPFMT *fmt,
             else if (sym.value < 0x54000UL)
             {
                 dist = (long)(sym.value - 172032UL) - riftOff;
+                /* With no RIFT table the DLL applies an implicit rift of
+                 * -sourceLen: the match distances are relative to the start
+                 * of the source image in the combined window. */
+                if (riftN == 0)
+                    dist += (long)srcLen;
             }
             else if (sym.value < 0x54004UL)
             {
