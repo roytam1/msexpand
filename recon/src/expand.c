@@ -2,6 +2,7 @@
  * expand.c -- main program driver, argument parsing, notifications.
  */
 #include "expand.h"
+#include "sfx.h"
 
 /* ------------------------------------------------------------------ */
 int  g_iTarget = -1;
@@ -349,6 +350,27 @@ int main(int argc, char **argv)
             dest[sizeof(dest) - 1] = 0;
         }
         g_pszOutFileName = CharLowerA(dest);
+
+        /* A Windows Update SFX is a PE stub around a CAB that carries
+         * _sfx_manifest_ / _sfx_.dll.  Extract it and apply its deltas. */
+        if (SfxIsArchive(g_pszInFileName))
+        {
+            SFX sfx;
+            if (SfxLoad(g_pszInFileName, &sfx) == 0)
+            {
+                result = SfxExpandFile(&sfx, dest);
+                SfxFree(&sfx);
+            }
+            else
+            {
+                result = -1;
+            }
+            exitCode = result != 1;
+            if (result < 0)
+                DisplayErrorMessage(result);
+            printf("\n");
+            goto nextFile;
+        }
 
         if (CabIsPsf(g_pszInFileName))
         {

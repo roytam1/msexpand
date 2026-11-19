@@ -768,3 +768,29 @@ Phase D is the genuine open-ended piece.
     file from chunk 0 with zero-fill; the real defects were the missing
     per-chunk reset, missing extra-long matches, and the unapplied seed
     transform, all three now addressed.
+
+    **Native SFX unpacking (part 17).**  `expand_recon.exe` now handles the
+    whole Windows Update SFX package without any OS helper.  Two gaps had to
+    be closed:
+
+      1. `src/cab.c` decoded LZX folders one CFDATA block at a time and
+         discarded the seed (`LzxDecompressSeeded` ignored its `seed`
+         argument).  Block 0 decoded, block 1 failed: Huffman trees, repeat
+         offsets and E8 translation all carry across CFDATA boundaries.  The
+         folder's payloads are now concatenated and passed to
+         `LzxRawDecompress()` in one pass.  Verified against an independent
+         `extrac32.exe` extraction of the hotfix CAB: 50/50 files identical.
+         `EnsureParentDir()` was also added to the DPX extraction loop so
+         nested CAB paths (`rtmgdr\`, `update\`) can be created.
+      2. New `src/sfx.c` detects an embedded CAB carrying `_sfx_manifest_`
+         and/or `_sfx_.dll`, carves it to a temporary file, parses the
+         manifest `[Deltas]` / `[Copy]` sections, and applies each delta with
+         `DeltaApply()` before writing the output to its manifest target.
+         `-F:` selection covers both CAB entries and delta targets; a
+         selected target pulls in its patch and source automatically.
+
+    End-to-end check: `expand_recon.exe IE6.0SP1-KB2722913-...EXE -F:* <dir>`
+    with `PA19_NO_OS=1` produces 18 patched binaries, all 0 differing bytes
+    versus the SFX-run `RTMQFE` ground truth; the OS-delegation default is
+    also 18/18 exact.  Regression suites (XPRESS 40/40, LZX, LZMS 6/6,
+    PA19 OS + native) still pass.

@@ -20,5 +20,6 @@
 # Local test outputs
 recon/testdata/oracle/
 recon/testdata/dnative.dll
+recon/testdata/sfxout/
 
 recon/private/

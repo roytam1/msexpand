@@ -185,7 +185,9 @@ int DpxExpandFile(void)
         PrintMsg(MSG_DPX_EXPANDING);
         for (i = 0; i < nSel; ++i)
         {
-            int r = CabExtractOne(src, sel[i].entry, sel[i].target);
+            int r;
+            EnsureParentDir(sel[i].target);
+            r = CabExtractOne(src, sel[i].entry, sel[i].target);
             if (r != 1)
             {
                 failed = 1;

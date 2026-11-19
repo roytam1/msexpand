@@ -503,11 +503,82 @@ static int CabDecompressFolder(CAB *cab, int folderIndex,
 
     coff = folder->coffCabStart;
     count = 0;
+
+    /* An LZX folder is one continuous stream: the CFDATA blocks only chop
+     * it into transport units.  Huffman trees, repeat offsets and the E8
+     * translation state all carry across block boundaries, so the payloads
+     * must be concatenated and decoded in a single pass. */
+    if ((folder->typeCompress & 0x000F) == 3)
+    {
+        unsigned char *comp;
+        unsigned long compLen = 0;
+        unsigned long total = 0;
+        unsigned long c = coff;
+        unsigned long w = 0;
+        int windowBits;
+
+        while (c + 8 <= (unsigned long)cab->dataLen)
+        {
+            const unsigned char *p = cab->data + c;
+            unsigned short cbData = Rd16(p + 4);
+            unsigned short cbUncomp = Rd16(p + 6);
+            if (c + 8 + cbData > (unsigned long)cab->dataLen)
+                break;
+            if (cbUncomp > 0x8000UL)
+                break;
+            compLen += cbData;
+            total += cbUncomp;
+            c += 8 + (unsigned long)cbData;
+        }
+        windowBits = (folder->typeCompress >> 8) & 0x1F;
+        if (windowBits < 15 || windowBits > 25)
+            windowBits = 15;
+        if (!compLen || total != size)
+        {
+            free(buf);
+            free(window);
+            return -1;
+        }
+        comp = (unsigned char *)malloc((size_t)compLen);
+        if (!comp)
+        {
+            free(buf);
+            free(window);
+            return -1;
+        }
+        c = coff;
+        while (c + 8 <= (unsigned long)cab->dataLen && w < compLen)
+        {
+            const unsigned char *p = cab->data + c;
+            unsigned short cbData = Rd16(p + 4);
+            if (c + 8 + cbData > (unsigned long)cab->dataLen)
+                break;
+            if (w + cbData > compLen)
+                break;
+            memcpy(comp + w, p + 8, (size_t)cbData);
+            w += cbData;
+            c += 8 + (unsigned long)cbData;
+        }
+        if (w != compLen ||
+            LzxRawDecompress(comp, compLen, buf, size, windowBits) != 0)
+        {
+            free(comp);
+            free(buf);
+            free(window);
+            return -1;
+        }
+        free(comp);
+        free(window);
+        z.outLen = size;
+        *outData = buf;
+        *outSize = size;
+        return 1;
+    }
+
     while (coff + 8 <= (unsigned long)cab->dataLen)
     {
         const unsigned char *p = cab->data + coff;
         unsigned short cbData = Rd16(p + 4);
-        unsigned short cbUncomp = Rd16(p + 6);
         const unsigned char *payload = p + 8;
         if (coff + 8 + cbData > (unsigned long)cab->dataLen)
             break;
@@ -527,42 +598,6 @@ static int CabDecompressFolder(CAB *cab, int folderIndex,
                 break;
             if (InflateMszipBlock(payload + 2, cbData - 2, &z) != 0)
                 break;
-        }
-        else if ((folder->typeCompress & 0x000F) == 3)
-        {
-            unsigned char *shifted;
-            int windowBits;
-            int dr;
-
-            if (cbData < 2 || cbUncomp == 0 ||
-                z.outLen + cbUncomp > z.outCap)
-            {
-                free(buf);
-                free(window);
-                return -1;
-            }
-            windowBits = (folder->typeCompress >> 8) & 0x1F;
-            if (windowBits < 15 || windowBits > 21)
-                windowBits = 15;
-            shifted = (unsigned char *)malloc(cbData);
-            if (!shifted)
-            {
-                free(buf);
-                free(window);
-                return -1;
-            }
-            /* lzxdec.c consumes the CAB E8 header bit itself. */
-            memcpy(shifted, payload, (size_t)cbData);
-            dr = LzxDecompressSeeded(shifted, cbData, buf + z.outLen,
-                                     cbUncomp, windowBits, buf, z.outLen);
-            free(shifted);
-            if (dr != 0)
-            {
-                free(buf);
-                free(window);
-                return -1;
-            }
-            z.outLen += cbUncomp;
         }
         else
         {

@@ -27,7 +27,8 @@ needed ??the CAB reader is compiled into the EXE.
 | `src/expand.c` | `main`, `ParseArguments`, `CheckArguments`, `GetNextFileArg`, `ProcessNotification`, path helpers |
 | `src/messages.c` | The RT_STRING message table (hardcoded English text) and `DisplayErrorMessage`/`PrintMsg` |
 | `src/lz.c` | `InitGlobalBuffers`, `GetHdr`, `IsCompressed`, `Expand`/`ExpandOrCopyFile`, `LZDecode` (SZDD token stream) |
-| `src/cab.c` | FDI/CAB path: `CabIsCabinet`, cabinet header/folder/file parsing, MSZIP inflate, selected-file extraction |
+| `src/cab.c` | FDI/CAB path: `CabIsCabinet`, cabinet header/folder/file parsing, MSZIP and LZX folder decompression, selected-file extraction |
+| `src/sfx.c` | Windows Update SFX detection, embedded-CAB carving and manifest-driven patch application |
 | `src/dpx.c` | `DpxExpandFile`, `EnumerateFilesToExtract`, `AddFilesToExtract`, `ProcessDpxNotification` semantics |
 | `src/util.c` | Wide/ANSI conversion, path joining, `PatternMatch`, parent-directory creation |
 | `src/xml.c` | Minimal UTF-8 XML DOM parser for CIX manifests |
@@ -38,6 +39,7 @@ needed ??the CAB reader is compiled into the EXE.
 | `src/lzms.c` | LZMS raw/chunk decompression (ported from wimlib, LGPL-2.1+) |
 | `test_lzms.c` / `test_lzms.bat` | Generates vectors with the OS compressor and runs the LZMS tests |
 | `test_xpress.c` / `test_xpress.bat` | Runs the 40 go-ntfs XPRESS vectors |
+| `test_sfx.bat` | Unpacks the IE6 SP1 hotfix SFX natively and compares all patched binaries with the SFX-run outputs |
 
 ## What is implemented
 
@@ -50,10 +52,14 @@ needed ??the CAB reader is compiled into the EXE.
   magic, 8-tokens-per-control-byte stream, 4096-byte ring dictionary) and
   raw file copying, including the expansion-name restoration and the
   `bytes expanded to ... % increase` summaries.
-* Cabinet expansion: CFHEADER/CFFOLDER/CFFILE/CFDATA parsing, uncompressed
-  and **MSZIP** (raw DEFLATE: stored, fixed and dynamic Huffman) folders,
-  `-D` listing, `-F:` selective extraction, multi-file cabinets, and the
-  original DPX-style progress messages.
+* Cabinet expansion: CFHEADER/CFFOLDER/CFFILE/CFDATA parsing, uncompressed,
+  **MSZIP** (raw DEFLATE: stored, fixed and dynamic Huffman) and **LZX**
+  folders, `-D` listing, `-F:` selective extraction, multi-file cabinets,
+  and the original DPX-style progress messages.
+* **Windows Update SFX packages:** when the input carries an embedded CAB
+  with `_sfx_manifest_` and/or `_sfx_.dll`, the CAB is carved out, extracted
+  and the manifest's `[Deltas]` are applied with `DeltaApply()`, so patched
+  binaries are written directly. `PA19_NO_OS=1` forces the native decoder.
 * **PSTREAM/PSF containers (Phase A):** 48-byte header parsing, UTF-8 CIX
   XML index, `-D` listing, `-F:` selection, RAW source ranges, CRC32
   verification, and creation of nested output directories. Tested with the
@@ -78,8 +84,8 @@ needed ??the CAB reader is compiled into the EXE.
 * Remaining DPX features: CIX manifests
   inside CABs. Building a PSF requires the
   `job.xml` / CIX machinery of `dpx.dll`, which is far beyond the core.
-* Cabinet compression types other than 0 (none) and 1 (MSZIP) ??Quantum,
-  LZX, LZMS ??are reported as `Unrecognized compression scheme`.
+* Cabinet compression types other than 0 (none), 1 (MSZIP) and 3 (LZX)
+  ??Quantum, LZMS ??are reported as `Unrecognized compression scheme`.
 * Split/spanned cabinets and the `-K:` / `-E:` encryption path are not
   implemented.
 * MUI localisation, ETW tracing and the asynchronous progress thread are

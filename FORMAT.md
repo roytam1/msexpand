@@ -384,3 +384,67 @@ the LSB-first bit reader used everywhere else.
   present and falls back to the native path (force it with `PA19_NO_OS=1`).
 * PA30 header parsing, the `IntFormat`, the RIFT table, the CompositeFormat
   header and the compo decompressor are implemented in `recon/src/delta.c`.
+* CAB folders of types 0, 1 and 3 (LZX) are decoded natively by
+  `recon/src/cab.c`; an LZX folder's CFDATA payloads are concatenated into
+  one continuous stream before decoding, because the Huffman trees, repeat
+  offsets and E8 translation persist across block boundaries.
+
+---
+
+# Windows Update SFX container
+
+Older Windows Update hotfixes are self-extracting packages: a PE stub followed
+by an ordinary CAB. The stub is `_sfx_.dll` (bundled inside the CAB), and the
+CAB also carries a plain-text `_sfx_manifest_`. Detection can therefore key on
+either marker.
+
+```
+PE stub (MZ/PE)
+embedded CAB ("MSCF" at a nonzero offset)
+    _sfx_manifest_
+    _sfx_.dll
+    <old files>        e.g. rtmgdr\*.dll
+    <PA19 patches>     e.g. *.dll._p
+    update\...         installer files
+```
+
+The manifest is an INI-style file:
+
+```
+[Options]
+Run = "update\update.exe"
+PatchDll = "_sfx_.dll"
+
+[Deltas]
+"RTMQFE\danim.dll" = "danim.dll._p", "RTMGDR\danim.dll"
+
+[Verify]
+"RTMQFE\danim.dll" = <32 hex digits, MD5>
+
+[Copy]
+"update\iecustom.dll" = "iecustom.dll"
+
+[Delete]
+"*._p"
+"_sfx_.dll"
+```
+
+Each `[Deltas]` line gives the output path, the patch path and the old-file
+path; applying the patch (PA19 or PA30) to the old file produces the output.
+`[Copy]` lines copy a CAB entry to another path, `[Verify]` holds MD5 hashes,
+and `[Delete]` lists files the stub removes after installing.
+
+`expand_recon.exe` detects this container, carves the CAB to a temporary file,
+extracts it (including LZX folders), applies every manifest delta with
+`DeltaApply()` and honours `[Copy]`, writing patched binaries directly. `-F:`
+selection applies to both CAB entries and delta targets; a selected delta
+target pulls in its patch and source automatically.
+
+---
+
+# Implementation status (continued)
+
+* SFX handling lives in `recon/src/sfx.c` and is wired into `recon/src/expand.c`.
+  On the IE6 SP1 KB2722913 hotfix it produces all 18 patched binaries
+  byte-identically to the SFX-generated `RTMQFE` outputs, both with OS
+  delegation and with `PA19_NO_OS=1`.
