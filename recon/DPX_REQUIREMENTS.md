@@ -902,3 +902,19 @@ Phase D is the genuine open-ended piece.
     not present in either the source or earlier output).  Real deltas remain
     on the byte-exact `msdelta.dll` path; generated vectors and all other
     regression suites pass natively.
+
+    **Compo port, part 23 (segment boundaries).**  Following the boundary
+    delta 37922 back to the patch stream showed the `CompositeFormat`
+    boundaries are stored as absolute output offsets in this container, not
+    cumulative deltas.  Reading them cumulatively produced a second boundary
+    of 49054 and switched code sets 37922 bytes too late, which desynced the
+    main-tree Huffman decode exactly at output position 37922.  `compfmt_read`
+    now stores the integers verbatim.  Match distances and the repeat history
+    are also kept signed so source-relative negative distances stay valid.
+
+    With these changes the first real KB2959977 PA30 blob decodes natively
+    to 49544 bytes, byte-identical to `msdelta.dll` (SHA256 628d60...) and
+    matches the CIX manifest hash for wuauclt.exe.  Generated PA30 vectors,
+    PA19, XPRESS, LZX and LZMS suites still pass.  Later blobs in the chain
+    (e.g. wusettingsprovider.dll) still need the OS path; their rift tables
+    are not yet parsed correctly.

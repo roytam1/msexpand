@@ -478,7 +478,6 @@ static int compfmt_read(COMPFMT *f, BITR *br)
     unsigned char initial[872];
     const unsigned char *baseline;
     unsigned i;
-    unsigned long prev = 0;
 
     memset(f, 0, sizeof(*f));
     if (br_read(br, 1))
@@ -490,11 +489,9 @@ static int compfmt_read(COMPFMT *f, BITR *br)
     f->nSeg = br_read_int(br);
     if (f->nSeg == 0 || f->nSeg > 32)
         return -1;
+    /* Boundaries are absolute output offsets in this stream. */
     for (i = 0; i < f->nSeg; ++i)
-    {
-        prev += br_read_int(br);
-        f->boundary[i] = (unsigned)prev;
-    }
+        f->boundary[i] = (unsigned)br_read_int(br);
     for (i = 0; i < 39; ++i)
         f->metaLen[i] = (unsigned char)br_read(br, 4);
     if (huff_build(&meta, f->metaLen, 39, 15) != 0)
@@ -682,7 +679,7 @@ static int compo_decompress(BITR *br, const COMPFMT *fmt,
                             int e8Translate)
 {
     unsigned long pos = 0;
-    unsigned long hist[3] = { 0, 0, 0 };
+    long hist[3] = { 0, 0, 0 };
     COMPF cf;
     unsigned char lens[872];
     unsigned segIndex = 0;
@@ -724,7 +721,7 @@ static int compo_decompress(BITR *br, const COMPFMT *fmt,
         }
         {
             unsigned long len = sym.length;   /* type is the byte count */
-            unsigned long dist = 0;
+            long dist = 0;
             long riftOff = 0;
             unsigned ri;
             for (ri = 0; ri < riftN; ++ri)
@@ -757,8 +754,7 @@ static int compo_decompress(BITR *br, const COMPFMT *fmt,
             }
             else if (sym.value < 0x54000UL)
             {
-                dist = sym.value - 172032UL;
-                dist = (unsigned long)((long)dist - riftOff);
+                dist = (long)(sym.value - 172032UL) - riftOff;
             }
             else if (sym.value < 0x54004UL)
             {
@@ -766,7 +762,7 @@ static int compo_decompress(BITR *br, const COMPFMT *fmt,
             }
             else
             {
-                dist = sym.value - 344067UL;
+                dist = (long)(sym.value - 344067UL);
             }
             if (sym.value != 0x54000UL)
             {
@@ -774,13 +770,14 @@ static int compo_decompress(BITR *br, const COMPFMT *fmt,
                 /* The match window is the source file followed by the
                  * bytes decoded so far, so a distance larger than `pos`
                  * reaches back into the source. */
-                if (dist == 0 || dist > pos + srcLen)
+                if (dist == 0 || dist > (long)(pos + srcLen) ||
+                    dist < -(long)srcLen)
                     return -1;
                 if (len > outLen - pos)
                     len = outLen - pos;
                 for (i = 0; i < len; ++i)
                 {
-                    long ap = (long)pos + (long)i - (long)dist;
+                    long ap = (long)pos + (long)i - dist;
                     if (ap >= 0)
                         out[pos + i] = out[ap];
                     else
