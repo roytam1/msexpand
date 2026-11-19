@@ -964,3 +964,18 @@ Phase D is the genuine open-ended piece.
     now in `src/delta.c`.  It leaves the first real delta byte-exact and
     all PA30/PA19/XPRESS/LZX/LZMS regression suites green; pre-blob parsing
     itself is still not enabled in the native decoder.
+
+    **Compo port, part 27 (pre blob leader).**  The pre blob carries the
+    same 3-bit zero leader as the PA30 header: reading its target info from
+    bit 3 yields ImageBase 0x10000000, GlobalPointer 0 and TimeStamp
+    0x5344BCA1 for the wusettingsprovider delta, matching the real target
+    PE header.  `DeltaApply` now skips that leader and walks the target
+    info, the first RiftTable and optional CliMetadata before reading the
+    compression map; rift matches record a signed distance and the repeat
+    history starts at {1,1,1}.
+
+    The first RiftTable after the target info still parses as empty with
+    the current IntFormat reader, so the compression map is not yet
+    recovered and the chained delta still fails.  All existing suites
+    remain green and the first real delta stays byte-exact; chained deltas
+    continue to use `msdelta.dll`.

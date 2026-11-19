@@ -679,7 +679,7 @@ static int compo_decompress(BITR *br, const COMPFMT *fmt,
                             int e8Translate)
 {
     unsigned long pos = 0;
-    long hist[3] = { 0, 0, 0 };
+    long hist[3] = { 1, 1, 1 };
     COMPF cf;
     unsigned char lens[872];
     unsigned segIndex = 0;
@@ -739,6 +739,7 @@ static int compo_decompress(BITR *br, const COMPFMT *fmt,
                  * the source, later positions read already-decoded output. */
                 long sp = (long)pos + riftOff;
                 unsigned long j;
+                dist = -riftOff;
                 if (sp < 0 || (unsigned long)(sp + (long)len) > srcLen + pos)
                     return -1;
                 if (len > outLen - pos)
@@ -1345,11 +1346,43 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
     {
         BITR pbr;
         RIFTENTRY *rt = NULL;
+        RIFTENTRY *tmp = NULL;
         unsigned rn = 0;
+        unsigned tmpN = 0;
         COMPFMT cf;
 
+        /* The pre blob is bit-packed with the same 3-bit leader.  It holds
+         * the target PE info, its RVA map, optional CLI metadata, and the
+         * compression RIFT table used by 0x54000 matches. */
+        if (preLen > 16)
+        {
+            BITR pb;
+            br_init(&pb, pre, preLen);
+            pb.bitpos += 64 + 32 + 32;   /* ImageBase, GlobalPointer, TimeStamp */
+            if (rift_read(&pb, &tmp, &tmpN) == 0)
+            {
+                if (br_read(&pb, 1))     /* CliMetadata present */
+                {
+                    pb.bitpos += 15 * 32 + 3;
+                    {
+                        unsigned __int64 mask;
+                        unsigned k;
+                        mask = (unsigned __int64)br_read(&pb, 32) |
+                               ((unsigned __int64)br_read(&pb, 32) << 32);
+                        for (k = 0; k < 64; ++k)
+                            if ((mask >> k) & 1)
+                                br_skip(&pb, 32);
+                    }
+                }
+                free(tmp);
+                tmp = NULL;
+                rift_read(&pb, &rt, &rn);
+            }
+        }
+
         br_init(&pbr, patch, patchLen);
-        rc = rift_read(&pbr, &rt, &rn);
+        if (!rt && rc == 0)
+            rc = rift_read(&pbr, &rt, &rn);
         if (rc == 0)
             rc = compfmt_read(&cf, &pbr);
         if (rc == 0)
