@@ -1219,6 +1219,33 @@ static void pa30_reloc_mask(const unsigned char *buf, unsigned long len,
         }
         off += bsize;
     }
+
+    /* RiftTransformResource marks every resource byte as handled; the
+     * relative-call/jump passes skip targets with this hint bit set. */
+    {
+        unsigned long rr = rd32(buf + opt + 0x60 + 2 * 8);
+        unsigned long rsz = rd32(buf + opt + 0x60 + 2 * 8 + 4);
+        unsigned long nsec = rd16(buf + pe + 6);
+        unsigned long sh = opt + rd16(buf + pe + 20);
+        unsigned long s;
+        if (rr && rsz)
+            for (s = 0; s < nsec && sh + 40 * s + 40 <= len; ++s)
+            {
+                unsigned long o = sh + 40 * s;
+                unsigned long va = rd32(buf + o + 12);
+                unsigned long vs = rd32(buf + o + 8);
+                unsigned long raw = rd32(buf + o + 20);
+                unsigned long rs = rd32(buf + o + 16);
+                if (rr >= va && rr < va + vs)
+                {
+                    unsigned long n = rs;
+                    if (n > len - raw) n = len - raw;
+                    if (raw < len)
+                        memset(mask + raw, 0x01, (size_t)n);
+                    break;
+                }
+            }
+    }
 }
 
 /* Mirrors the DLL's RiftTransformRelocationsI386Component::
@@ -2820,7 +2847,7 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
             rc = compfmt_read(&cf, &pbr);
         if (getenv("PA30_DEBUG")) fprintf(stderr,
             "COMPFMT nSeg=%u rc=%d at bit %lu\n", cf.nSeg, rc, pbr.bitpos);
-        if (rc == 0 && peTimeStamp && sourceLen >= 0x40)
+        if (rc == 0 && sourceLen >= 0x40)
         {
             unsigned long lfa = rd32(source + 0x3C);
             if (lfa + 24 <= sourceLen && memcmp(source + lfa, "PE\0\0", 4) == 0)
