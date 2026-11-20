@@ -734,6 +734,9 @@ static void e8_untranslate(unsigned char *out, unsigned long outLen)
     }
 }
 
+static unsigned long rd32(const unsigned char *p);
+static unsigned short rd16(const unsigned char *p);
+
 /* ---------- PA30 PE seed transform ---------------------------------------- */
 /* RiftTable::Map: add the rift of the nearest entry whose left <= rva. */
 static __int64 rift_map(const RIFTENTRY *t, unsigned n, __int64 x)
@@ -878,6 +881,105 @@ static void pa30_transform_pointers(unsigned char *buf, unsigned long len,
             pos += 1;
     }
     free(hint);
+}
+
+/* MarkNonExe: the DLL adds IMAGE_SCN_MEM_WRITE to the section that holds
+ * the import directory, so the rewritten import RVAs can be stored. */
+static void pa30_mark_import_section(unsigned char *buf, unsigned long len)
+{
+    unsigned long lfa, opt, nrva, imp, nsec, sh, s;
+    if (len < 0x40) return;
+    lfa = rd32(buf + 0x3C);
+    if (lfa + 24 > len || memcmp(buf + lfa, "PE\0\0", 4)) return;
+    nsec = rd16(buf + lfa + 6);
+    opt = lfa + 24;
+    if (rd16(buf + opt) != 0x10B || opt + 0x50 > len) return;
+    imp = rd32(buf + opt + 0x60 + 8);   /* Import Table RVA (data dir 1) */
+    if (getenv("PA30_DEBUG")) fprintf(stderr, "IMPORT RVA=%08lX\n", imp);
+    if (!imp) return;
+    nrva = rd32(buf + opt + 0x38);      /* SizeOfImage */
+    sh = opt + rd16(buf + lfa + 20);
+    for (s = 0; s < nsec; ++s)
+    {
+        unsigned long o = sh + 40 * s;
+        unsigned long va, vs, rs, ch;
+        if (o + 40 > len) break;
+        va = rd32(buf + o + 12);
+        vs = rd32(buf + o + 8);
+        rs = rd32(buf + o + 16);
+        if (imp >= va && imp < va + (vs ? vs : rs))
+        {
+            ch = rd32(buf + o + 36);
+            if (!(ch & 0x80000000UL))
+            {
+                ch |= 0x80000000UL;
+                buf[o + 36] = (unsigned char)(ch & 0xFF);
+                buf[o + 37] = (unsigned char)((ch >> 8) & 0xFF);
+                buf[o + 38] = (unsigned char)((ch >> 16) & 0xFF);
+                buf[o + 39] = (unsigned char)((ch >> 24) & 0xFF);
+            }
+            break;
+        }
+    }
+    (void)nrva;
+}
+
+/* RiftTransformRelocationsI386 / imports: rewrite dwords that are valid
+ * RVAs (rather than absolute VAs) through MapRva. */
+static void pa30_transform_rvas(unsigned char *buf, unsigned long len,
+                                const RIFTENTRY *rt, unsigned rn,
+                                unsigned long sizeOfImage,
+                                unsigned long sizeOfHeaders)
+{
+    unsigned long pos, start = sizeOfHeaders;
+    unsigned long end = len >= 4 ? len - 4 : 0;
+    /* Only the section that holds the import directory gets its RVAs
+     * rewritten; arbitrary .text words that look like RVAs must be left
+     * alone. */
+    {
+        unsigned long lfa, opt, imp, nsec, sh, s;
+        if (len >= 0x40)
+        {
+            lfa = rd32(buf + 0x3C);
+            if (lfa + 24 <= len && !memcmp(buf + lfa, "PE\0\0", 4))
+            {
+                nsec = rd16(buf + lfa + 6);
+                opt = lfa + 24;
+                imp = rd32(buf + opt + 0x60 + 8);
+                sh = opt + rd16(buf + lfa + 20);
+                for (s = 0; s < nsec; ++s)
+                {
+                    unsigned long o = sh + 40 * s;
+                    if (o + 40 > len) break;
+                    {
+                        unsigned long va = rd32(buf + o + 12);
+                        unsigned long vs = rd32(buf + o + 8);
+                        unsigned long raw = rd32(buf + o + 20);
+                        unsigned long rs = rd32(buf + o + 16);
+                        if (imp >= va && imp < va + (vs ? vs : rs))
+                        {
+                            start = raw;
+                            end = raw + rs;
+                            if (end > len) end = len;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    for (pos = start; pos + 4 <= end; pos += 4)
+    {
+        unsigned long v = rd32(buf + pos);
+        unsigned long nv;
+        unsigned k;
+        if (v < sizeOfHeaders || v >= sizeOfImage)
+            continue;
+        nv = pa30_map_rva(rt, rn, (long)v);
+        if (nv == v) continue;
+        for (k = 0; k < 4; ++k)
+            buf[pos + k] = (unsigned char)(nv >> (8 * k));
+    }
 }
 
 /* ---------- Decompress ---------------------------------------------------- */
@@ -1826,6 +1928,12 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
                         pa30_transform_pointers(prepared, sourceLen, rt, rn,
                             oldBase, (unsigned long)peImageBase,
                             sizeOfImage, sizeOfHeaders);
+                        if (getenv("PA30_RVAREWRITE"))
+                        {
+                            pa30_mark_import_section(prepared, sourceLen);
+                            pa30_transform_rvas(prepared, sourceLen, rt, rn,
+                                sizeOfImage, sizeOfHeaders);
+                        }
                     }
                     decompressSrc = prepared;
                     if (getenv("PA30_SEEDDUMP"))

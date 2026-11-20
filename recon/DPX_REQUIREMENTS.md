@@ -1170,3 +1170,16 @@ Phase D is the genuine open-ended piece.
     0x7AE0 (import-table region): our seed still differs from the DLL's in
     2021 bytes, so the remaining work is the import/export PE transforms.
     Blob 0, generated vectors, PA19, XPRESS, LZX and LZMS remain byte-exact.
+
+    **Import RVA rewrite (part 36).**  The DLL rewrites import-table RVAs by
+    `MapRva` (e.g. 0x0000B99E -> 0x000474C6) and sets IMAGE_SCN_MEM_WRITE on
+    the section holding the import directory (here .idata: 0x40000040 ->
+    0xC0000040).  `delta.c` now has `pa30_mark_import_section()` and
+    `pa30_transform_rvas()` (guarded by PA30_RVAREWRITE); restricted to the
+    import section they reproduce the DLL's bytes at 0x7AD0-0x7AF0 exactly.
+    Seed diff drops 2021 -> 1292 and blob 1 to 43590/307200 wrong (first
+    divergence 6948 -> 4878).  Remaining problem: the scan still rewrites
+    ASCII data that merely looks like an RVA (e.g. 0x83FC `"StringW"` `0x5767`
+    was changed to 0x178DF though the DLL left it), because the DLL uses a
+    per-byte usage/hint map produced by its transform pipeline rather than a
+    blind RVA scan.  Reproducing that hint/usage map is the last step.
