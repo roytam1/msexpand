@@ -1219,3 +1219,18 @@ Phase D is the genuine open-ended piece.
     handling and the hint-populating transform stages), not decoder changes.
     The decoder matches the DLL symbol-for-symbol wherever the seed and ORIFT
     are correct.
+
+    **Multiply sentinel investigation (part 39).**  `msdelta_mulout.gdb`
+    dumps every RiftTable passed to `RiftTable::Sort` (the output of Multiply).
+    The DLL's intermediate tables are t1=95, t2=82, t3=77 entries; ours are
+    91/91/91.  The critical missing entry was traced exactly:
+    `msdelta_buildrift.gdb` logged `ADD caller=0x2F1C0 104312 -> -158344`
+    producing t2[81] = `(104312, -158344)`; after Reverse + shift this becomes
+    the DLL's ORIFT `(153856, -158344)` with rift -312200, used at output
+    262695.  The DLL generates it from a sentinel branch at VA 0x1002F1AB
+    (`sub ecx,[var_3C]; sbb eax,[var_40]`), not from B.left - lastRift(A).
+    An empirical negative-preimage rule `B.left - lastRift(A)` added 6 entries
+    but NOT this one (missing count stayed 15), so it was reverted; blob 1
+    returned to 5858/86120.  A faithful port must reproduce the 32-bit
+    half-word arithmetic of the decompiled sentinel block
+    (`msdelta.dll.c:24042-24086`), which is the remaining work.
