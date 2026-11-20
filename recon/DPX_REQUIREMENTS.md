@@ -1358,3 +1358,36 @@ Phase D is the genuine open-ended piece.
     (first divergence 6948); with the DLL's exact seed the residual is the
     known **915/307200** seed-hint-map gap (first divergence 277460).  blob 0,
     d0, d1, PA19, XPRESS, LZX and LZMS all remain byte-exact.
+
+    **Byte-exact blob 1 (part 47).**  With the ORIFT now exact, two decoder
+    gaps remained.  (a) A RIFT symbol can span several OffsetRiftTable
+    entries: msdelta.dll.c:48253-48311 reselects the entry at every
+    boundary (87 = next.left - cpos) and switches source mapping there.
+    Freezing the first rift for the whole copy produced 915 wrong bytes;
+    chunking the copy at ift[ri].left - cpos reduced that to one.  (b) A
+    RIFT symbol stores `-rift` into the distance-history slots
+    (`msdelta.dll.c:48252,48392`); leaving `dist = 0` cost the final byte
+    (a k=1 history match at output 283783).  With both fixes the decoder is
+    byte-exact given the DLL's seed.
+
+    **Seed transform.**  The DLL's per-byte hint map (dumped via
+    `diag/msdelta_hint4.gdb` at `MapRva` = RVA `0x35E39`) marks the
+    fields that `RiftTransformRelocationsI386Component::TransformInferredRelocations`
+    (RVA `0x3B681`, `msdelta.dll.c:36296`) is allowed to rewrite.  Those
+    fields are exactly the type-3/type-10 entries of the **source PE's
+    relocation directory**; a free-running VA scan rewrites incidental
+    4-byte windows (e.g. dwords starting at an `E8` opcode) that the DLL
+    leaves alone.  `pa30_reloc_mask` now pins the inferred scan to those
+    sites.  The remaining seed stages:
+
+      - `pa30_transform_relocs` rebuilds .reloc: map every entry's RVA
+        through the rift table, radix-sort by mapped RVA, regroup blocks by
+        mapped page (`msdelta.dll.c:35127-35535`).
+      - `pa30_transform_resources` remaps resource-directory OffsetToData
+        fields through the same table, keeping `mapped & 0xFFF`.
+      - Import-by-ordinal thunks (high bit set) are RVAs-with-flag and must
+        not be MapRva'd; the DLL leaves their ordinals alone.
+
+    Result: our computed seed is now byte-identical to the DLL's (0/49544
+    differing), and blob 1 decodes with **0/307200 wrong bytes** with no
+    external seed.  blob 0, d0, d1, PA19, XPRESS, LZX and LZMS remain exact.

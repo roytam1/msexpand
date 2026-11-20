@@ -1176,6 +1176,51 @@ static unsigned long pa30_map_rva(const RIFTENTRY *rt, unsigned rn,
     return (unsigned long)((long)rva + rift);
 }
 
+/* PE relocations list every VA-bearing field.  Build a per-byte mask of
+ * type-3 (HIGHLOW) and type-10 (DIR64) relocation sites so the inferred
+ * pointer rewrite touches only those dwords, not incidental 4-byte windows
+ * that happen to look like an image VA. */
+static void pa30_reloc_mask(const unsigned char *buf, unsigned long len,
+                            unsigned char *mask)
+{
+    unsigned long pe, opt, rrva, rsize, off, end;
+    if (len < 0x40) return;
+    pe = rd32(buf + 0x3C);
+    if (pe + 24 > len || memcmp(buf + pe, "PE\0\0", 4)) return;
+    opt = pe + 24;
+    if (rd16(buf + opt) != 0x10B || opt + 0x90 > len) return;
+    rrva = rd32(buf + opt + 0x60 + 5 * 8);
+    rsize = rd32(buf + opt + 0x60 + 5 * 8 + 4);
+    if (!rrva || !rsize) return;
+    off = pa30_rva_off(buf, len, rrva);
+    if (off == 0xFFFFFFFFUL || off + rsize > len) return;
+    end = off + rsize;
+    while (off + 8 <= end)
+    {
+        unsigned long page = rd32(buf + off);
+        unsigned long bsize = rd32(buf + off + 4);
+        unsigned long e, fo;
+        if (bsize < 8 || bsize > end - off) break;
+        for (e = 8; e + 2 <= bsize; e += 2)
+        {
+            unsigned long entry = rd16(buf + off + e);
+            unsigned long type = entry >> 12;
+            unsigned long roff = entry & 0xFFF;
+            if (type == 3 || type == 10)
+            {
+                fo = pa30_rva_off(buf, len, page + roff);
+                if (fo != 0xFFFFFFFFUL && fo + 4 <= len)
+                {
+                    unsigned k;
+                    for (k = 0; k < 4; ++k) mask[fo + k] &= ~0x02U;
+                }
+            }
+            if (type == 4) ++e;
+        }
+        off += bsize;
+    }
+}
+
 /* Mirrors the DLL's RiftTransformRelocationsI386Component::
  * TransformInferredRelocations: scan from SizeOfHeaders, rewriting any
  * aligned dword that is a VA inside the old image to
@@ -1186,7 +1231,8 @@ static void pa30_transform_pointers(unsigned char *buf, unsigned long len,
                                     unsigned long oldBase,
                                     unsigned long newBase,
                                     unsigned long sizeOfImage,
-                                    unsigned long sizeOfHeaders)
+                                    unsigned long sizeOfHeaders,
+                                    const unsigned char *relocMask)
 {
     unsigned char *hint;
     unsigned long pos;
@@ -1196,6 +1242,7 @@ static void pa30_transform_pointers(unsigned char *buf, unsigned long len,
         return;
     hint = (unsigned char *)calloc((size_t)len, 1);
     if (!hint) return;
+    if (relocMask) memcpy(hint, relocMask, len);
     pos = sizeOfHeaders;
     while (pos < end)
     {
@@ -1346,8 +1393,9 @@ static void pa30_rewrite_imports(unsigned char *buf, unsigned long len,
             {
                 unsigned long v = rd32(buf + to + 4 * i);
                 if (!v) break;
-                pa30_set_u32(buf, to + 4 * i,
-                             pa30_map_rva(rt, rn, (long)v));
+                if (!(v & 0x80000000UL))
+                    pa30_set_u32(buf, to + 4 * i,
+                                 pa30_map_rva(rt, rn, (long)v));
             }
         }
     }
@@ -1410,6 +1458,138 @@ static void pa30_transform_rvas(unsigned char *buf, unsigned long len,
     }
 }
 
+/* The DLL's RiftTransformRelocations component rebuilds the .reloc section:
+ * every entry's RVA is mapped through the (reduced) RiftTable, entries are
+ * sorted by mapped RVA, and blocks are regrouped by mapped page.  Without
+ * this the transformed seed keeps the source RVAs and the decoder copies
+ * stale bytes from those addresses. */
+typedef struct tagRELOC
+{
+    unsigned long rva;
+    unsigned short type;
+    unsigned short extra;
+} RELOC;
+
+static int cmp_reloc(const void *x, const void *y)
+{
+    const RELOC *a = (const RELOC *)x, *b = (const RELOC *)y;
+    if (a->rva < b->rva) return -1;
+    if (a->rva > b->rva) return 1;
+    return 0;
+}
+
+/* RiftTransformResource: resource-directory OffsetToData fields (high bit
+ * set) are relative to the resource section RVA and must be rebased through
+ * the same RiftTable; only the low 12 bits of the mapped RVA are kept. */
+static void pa30_transform_resources(unsigned char *buf, unsigned long len,
+                                     const RIFTENTRY *rt, unsigned rn)
+{
+    unsigned long pe, opt, rrva, rsize, off, i;
+    if (len < 0x40) return;
+    pe = rd32(buf + 0x3C);
+    if (pe + 24 > len || memcmp(buf + pe, "PE\0\0", 4)) return;
+    opt = pe + 24;
+    if (rd16(buf + opt) != 0x10B || opt + 0x90 > len) return;
+    rrva = rd32(buf + opt + 0x60 + 2 * 8);      /* Resource directory */
+    rsize = rd32(buf + opt + 0x60 + 2 * 8 + 4);
+    if (!rrva || !rsize) return;
+    off = pa30_rva_off(buf, len, rrva);
+    if (off == 0xFFFFFFFFUL || off + rsize > len) return;
+    for (i = 0; i + 4 <= rsize; i += 4)
+    {
+        unsigned long v = rd32(buf + off + i);
+        if (!(v & 0x80000000UL)) continue;
+        if ((v & 0x7FFFFFFFUL) >= rsize) continue;
+        {
+            unsigned long nr = (unsigned long)pa30_map_rva(rt, rn,
+                                        (long)(rrva + (v & 0x7FFFFFFFUL)));
+            pa30_set_u32(buf, off + i, 0x80000000UL | (nr & 0xFFFUL));
+        }
+    }
+}
+
+static void pa30_transform_relocs(unsigned char *buf, unsigned long len,
+                                  const RIFTENTRY *rt, unsigned rn)
+{
+    unsigned long pe, opt, rrva, rsize, off, end, n = 0, i, w;
+    RELOC rel[4096];
+
+    if (len < 0x40) return;
+    pe = rd32(buf + 0x3C);
+    if (pe + 24 > len || memcmp(buf + pe, "PE\0\0", 4)) return;
+    opt = pe + 24;
+    if (rd16(buf + opt) != 0x10B || opt + 0x90 > len) return;
+    rrva = rd32(buf + opt + 0x60 + 5 * 8);      /* Base Relocation Table */
+    rsize = rd32(buf + opt + 0x60 + 5 * 8 + 4);
+    if (!rrva || !rsize) return;
+    off = pa30_rva_off(buf, len, rrva);
+    if (off == 0xFFFFFFFFUL || off + rsize > len) return;
+    end = off + rsize;
+
+    while (off + 8 <= end)
+    {
+        unsigned long page = rd32(buf + off);
+        unsigned long bsize = rd32(buf + off + 4);
+        unsigned long e;
+        if (bsize < 8 || bsize > end - off) break;
+        for (e = 8; e + 2 <= bsize; e += 2)
+        {
+            unsigned long entry = rd16(buf + off + e);
+            unsigned long type = entry >> 12;
+            unsigned long roff = entry & 0xFFF;
+            if (!type) continue;
+            if (n >= sizeof(rel) / sizeof(rel[0])) break;
+            rel[n].rva = (unsigned long)pa30_map_rva(rt, rn,
+                                                     (long)(page + roff));
+            rel[n].type = (unsigned short)type;
+            rel[n].extra = (type == 4 && e + 4 <= bsize)
+                         ? rd16(buf + off + e + 2) : 0;
+            if (type == 4) ++e;
+            ++n;
+        }
+        off += bsize;
+    }
+    if (!n) return;
+    qsort(rel, n, sizeof(rel[0]), cmp_reloc);
+
+    off = pa30_rva_off(buf, len, rrva);
+    w = off;
+    i = 0;
+    while (i < n && w + 8 <= end)
+    {
+        unsigned long page = rel[i].rva & 0xFFFFF000UL;
+        unsigned long j = i, k, cnt, bsize, wp;
+        while (j < n && (rel[j].rva & 0xFFFFF000UL) == page) ++j;
+        cnt = j - i;
+        bsize = 8 + 2 * cnt;
+        if (bsize & 2) bsize += 2;
+        if (w + bsize > end) break;
+        pa30_set_u32(buf, w, page);
+        pa30_set_u32(buf, w + 4, bsize);
+        wp = w + 8;
+        for (k = i; k < j; ++k)
+        {
+            unsigned long v = (rel[k].rva & 0xFFF) | (rel[k].type << 12);
+            buf[wp] = (unsigned char)(v & 0xFF);
+            buf[wp + 1] = (unsigned char)(v >> 8);
+            wp += 2;
+            if (rel[k].type == 4)
+            {
+                buf[wp] = (unsigned char)(rel[k].extra & 0xFF);
+                buf[wp + 1] = (unsigned char)(rel[k].extra >> 8);
+                wp += 2;
+            }
+        }
+        if ((wp - w) & 2)
+        {
+            buf[wp] = 0; buf[wp + 1] = 0;
+            wp += 2;
+        }
+        w = wp;
+        i = j;
+    }
+}
+
 /* ---------- Decompress ---------------------------------------------------- */
 static void compo_partial_dump(const unsigned char *out, unsigned long pos)
 {
@@ -1435,6 +1615,13 @@ static int compo_decompress(BITR *br, const COMPFMT *fmt,
     unsigned segIndex = 0;
     int currentSeg = -1;
     int rc;
+    unsigned long symLo = 0, symHi = 100000;
+    {
+        const char *s = getenv("PA30_SYMLO");
+        const char *e = getenv("PA30_SYMHI");
+        if (s) symLo = strtoul(s, NULL, 0);
+        if (e) symHi = strtoul(e, NULL, 0);
+    }
 
     while (pos < outLen)
     {
@@ -1469,7 +1656,7 @@ static int compo_decompress(BITR *br, const COMPFMT *fmt,
         }
 
 
-        if (getenv("PA30_SYMDBG") && pos < 100000)
+        if (getenv("PA30_SYMDBG") && pos >= symLo && pos < symHi)
             fprintf(stderr, "SYM pos=%lu val=%lu len=%lu bitpos=%lu\n",
                     pos, sym.value, sym.length, br->bitpos);
         if (sym.length == 1)
@@ -1503,31 +1690,65 @@ static int compo_decompress(BITR *br, const COMPFMT *fmt,
 
             if (sym.value == 0x54000UL)
             {
-                unsigned long j;
-                long sp = cpos + riftOff;
-                if (getenv("PA30_SYMDBG") && pos == 262695)
-                    fprintf(stderr, "RIFT262695 cpos=%ld off=%ld sp=%ld len=%lu\n",
-                            cpos, riftOff, sp, len);
-                if (getenv("PA30_SYMDBG") && pos == 1026)
-                    fprintf(stderr, "RIFT1026 cpos=%ld off=%ld sp=%ld len=%lu\n",
-                            cpos, riftOff, sp, len);
-                if (sp < 0 || (unsigned long)(sp + (long)len) > srcLen + pos)
-                {
-                    if (getenv("PA30_DEBUG")) fprintf(stderr,
-                        "DECOMP riftfail: pos=%lu sp=%ld len=%lu riftOff=%ld bitpos=%lu\n",
-                        pos, sp, len, riftOff, br->bitpos);
-                    compo_partial_dump(out, pos);
-                    return -1;
-                }
+                unsigned long done = 0;
+                unsigned curi;
+                long curOff;
+
+                /* InternalProcess stores -rift into the distance history on
+                 * a RIFT symbol (msdelta.dll.c:48252,48392); the k<3 history
+                 * slots read that value back. */
+                dist = -riftOff;
                 if (len > outLen - pos)
                     len = outLen - pos;
-                for (j = 0; j < len; ++j)
+                /* The DLL's copy loop re-reads the OffsetRiftTable at every
+                 * entry boundary (msdelta.dll.c:48253-48311): a single RIFT
+                 * symbol may span several entries, each with a different
+                 * source mapping.  Freezing the first rift for the whole
+                 * copy silently corrupts the bytes past the first boundary. */
+                while (done < len)
                 {
-                    long ap = sp + (long)j;
-                    if (ap < (long)srcLen)
-                        out[pos + j] = src[ap];
-                    else
-                        out[pos + j] = out[ap - (long)srcLen];
+                    unsigned long j, chunk = len - done;
+                    long cpos2 = (long)pos + (long)srcLen + (long)done;
+                    long limit, sp;
+
+                    curOff = -(long)srcLen;
+                    for (curi = 0; curi < riftN; ++curi)
+                    {
+                        if (rift[curi].left <= cpos2)
+                            curOff = (long)(rift[curi].right - rift[curi].left);
+                        else
+                            break;
+                    }
+                    limit = (curi < riftN) ? rift[curi].left - cpos2 : -1;
+                    if (limit > 0 && limit < (long)chunk)
+                        chunk = (unsigned long)limit;
+                    sp = cpos2 + curOff;
+
+                    if (getenv("PA30_SYMDBG") && pos >= symLo && pos < symHi)
+                        fprintf(stderr,
+                            "RIFT pos=%lu len=%lu done=%lu cpos=%ld ri=%u/%u off=%ld sp=%ld limit=%ld chunk=%lu bitpos=%lu\n",
+                            pos, len, done, cpos2, curi, riftN, curOff, sp,
+                            limit, chunk, br->bitpos);
+
+                    if (sp < 0 ||
+                        (unsigned long)(sp + (long)chunk) > srcLen + pos + done)
+                    {
+                        if (getenv("PA30_DEBUG")) fprintf(stderr,
+                            "DECOMP riftfail: pos=%lu sp=%ld len=%lu riftOff=%ld bitpos=%lu\n",
+                            pos + done, sp, chunk, curOff, br->bitpos);
+                        compo_partial_dump(out, pos);
+                        return -1;
+                    }
+                    for (j = 0; j < chunk; ++j)
+                    {
+                        long ap = sp + (long)j;
+                        if (ap < (long)srcLen)
+                            out[pos + done + j] = src[ap];
+                        else
+                            out[pos + done + j] = out[ap - (long)srcLen];
+                    }
+                    done += chunk;
+                    if (limit <= 0) break;      /* no further rift boundary */
                 }
             }
             else if (sym.value < 0x54000UL)
@@ -2401,18 +2622,27 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
                         prepared[lfa + 24 + 0x1F] = (unsigned char)((peImageBase >> 24) & 0xFF);
                         /* NormalizeCoffImage zeroes the PE checksum. */
                         memset(prepared + lfa + 24 + 0x40, 0, 4);
-                        pa30_transform_pointers(prepared, sourceLen, rt, rn,
-                            oldBase, (unsigned long)peImageBase,
-                            sizeOfImage, sizeOfHeaders);
-                        if (getenv("PA30_RVAREWRITE"))
                         {
-                            pa30_mark_import_section(prepared, sourceLen);
-                            if (getenv("PA30_BLIND"))
-                                pa30_transform_rvas(prepared, sourceLen, rt, rn,
-                                    sizeOfImage, sizeOfHeaders);
-                            else
-                                pa30_rewrite_imports(prepared, sourceLen, rt, rn);
+                            unsigned char *relocMask =
+                                (unsigned char *)malloc(sourceLen);
+                            if (relocMask)
+                            {
+                                memset(relocMask, 0x02, sourceLen);
+                                pa30_reloc_mask(prepared, sourceLen, relocMask);
+                            }
+                            pa30_transform_pointers(prepared, sourceLen, rt, rn,
+                                oldBase, (unsigned long)peImageBase,
+                                sizeOfImage, sizeOfHeaders, relocMask);
+                            free(relocMask);
                         }
+                        pa30_transform_relocs(prepared, sourceLen, rt, rn);
+                        pa30_transform_resources(prepared, sourceLen, rt, rn);
+                        pa30_mark_import_section(prepared, sourceLen);
+                        if (getenv("PA30_BLIND"))
+                            pa30_transform_rvas(prepared, sourceLen, rt, rn,
+                                sizeOfImage, sizeOfHeaders);
+                        else
+                            pa30_rewrite_imports(prepared, sourceLen, rt, rn);
                     }
                     /* Verification hook: use the DLL's dumped transformed
                      * seed instead of our computed one. */
