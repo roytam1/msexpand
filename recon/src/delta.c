@@ -1221,11 +1221,11 @@ static int compo_decompress(BITR *br, const COMPFMT *fmt,
                 /* The match window is the source file followed by the
                  * bytes decoded so far, so a distance larger than `pos`
                  * reaches back into the source. */
-                if (getenv("PA30_SYMDBG") && pos == 83697)
+                if (getenv("PA30_SYMDBG") && (pos == 83697 || pos == 86119))
                 {
                     long ap = (long)pos - dist;
                     fprintf(stderr,
-                        "MATCH83697 val=%lu len=%lu cpos=%ld off=%ld dist=%ld ap=%ld srcbytes=",
+                        "MATCHDBG pos=%lu val=%lu len=%lu cpos=%ld off=%ld dist=%ld ap=%ld srcbytes=",
                         sym.value, len, cpos, riftOff, dist, ap);
                     {
                         unsigned k;

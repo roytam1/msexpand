@@ -26,6 +26,6 @@ class Src(gdb.Breakpoint):
 
 gdb.write("base=%08x\n" % base)
 if base:
-    Src(base + 0x48352)
+    Src(base + 0x4665B)
 end
 continue
