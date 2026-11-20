@@ -327,6 +327,11 @@ static int read_trees(struct state *st)
                        st->len_len)) return 0;
     if (!make_table(NUM_SECONDARY_LENGTHS, st->len_len, LEN_TABLE_BITS,
                     st->len_table, st->len_lr)) return 0;
+    /* LZX tree lengths are delta-encoded against the previous block's
+     * lengths.  Promote the trees we just read so a later block (or a block
+     * continued in the next chunk) decodes its trees against the right base. */
+    memcpy(st->main_prev, st->main_len, (size_t)nmain);
+    memcpy(st->len_prev, st->len_len, (size_t)NUM_SECONDARY_LENGTHS);
     return 1;
 }
 
@@ -463,7 +468,9 @@ int MsLzxDecompressSeededMulti(const unsigned char *const *chunks,
             if (e8present) {
                 u32 lo = getbits(&st->bs, 16);
                 u32 hi = getbits(&st->bs, 16);
-                e8base = (hi << 16) | lo;
+                /* The first 16 bits are the high half of the 32-bit value
+                 * (the uncompressed size used for E8 translation). */
+                e8base = (lo << 16) | hi;
             }
         }
 

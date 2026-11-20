@@ -728,13 +728,14 @@ int SfxExpandFile(SFX *sfx, const char *destDir)
         source = NULL;
         if (rc != 0 || !result)
         {
+            PrintMsg(MSG_DPX_INCOMPLETE, d->patch, rc);
             failed = 1;
             continue;
         }
         EnsureParentDir(target);
         if (SfxWriteFile(target, result, resultLen) != 0)
             failed = 1;
-        PrintMsg(MSG_EXPANDING, sfx->inputPath, target);
+        PrintMsg(MSG_EXPANDING, patchPath, target);
         SfxTrack(written, &nWritten, SFX_MAX_WRITTEN, d->target);
         free(result);
         result = NULL;
@@ -765,7 +766,7 @@ int SfxExpandFile(SFX *sfx, const char *destDir)
         }
         if (SfxCopyFile(from, to) != 0)
             failed = 1;
-        PrintMsg(MSG_COPYING, sfx->inputPath, to);
+        PrintMsg(MSG_COPYING, from, to);
         SfxTrack(written, &nWritten, SFX_MAX_WRITTEN, cp->target);
     }
 
