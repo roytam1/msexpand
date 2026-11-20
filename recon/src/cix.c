@@ -25,22 +25,23 @@ static void CopyAttr(char *dest, size_t destSize, XMLNODE *node,
     }
 }
 
-static void ReadHash(XMLNODE *node, CIXFILE *file)
+static void ReadHashInto(XMLNODE *node, char *alg, size_t algSize,
+                         unsigned char *hash, int *hashLen)
 {
     const char *value;
     unsigned char tmp[CIX_MAX_HASH];
     int n;
 
-    CopyAttr(file->hashAlg, sizeof(file->hashAlg), node, "alg");
-    file->hashLen = 0;
+    CopyAttr(alg, algSize, node, "alg");
+    *hashLen = 0;
     value = XmlAttr(node, "value");
     if (!value)
         return;
     n = HexToBytes(value, tmp, (int)sizeof(tmp));
     if (n <= 0)
         return;
-    memcpy(file->hash, tmp, (size_t)n);
-    file->hashLen = n;
+    memcpy(hash, tmp, (size_t)n);
+    *hashLen = n;
 }
 
 static CIXFILE *ParseFile(XMLNODE *node)
@@ -60,7 +61,8 @@ static CIXFILE *ParseFile(XMLNODE *node)
 
     h = XmlChild(node, "Hash");
     if (h)
-        ReadHash(h, f);
+        ReadHashInto(h, f->hashAlg, sizeof(f->hashAlg),
+                     f->hash, &f->hashLen);
 
     delta = XmlChild(node, "Delta");
     if (delta)
@@ -81,7 +83,8 @@ static CIXFILE *ParseFile(XMLNODE *node)
         f->sourceLength = AttrUL(source, "length");
         h = XmlChild(source, "Hash");
         if (h)
-            ReadHash(h, f);   /* source hash takes precedence */
+            ReadHashInto(h, f->sourceHashAlg, sizeof(f->sourceHashAlg),
+                         f->sourceHash, &f->sourceHashLen);
     }
     return f;
 }
@@ -156,28 +159,66 @@ CIXFILE *CixFind(CIX *cix, const char *name)
     return NULL;
 }
 
-int CixVerifyHash(CIXFILE *file, const unsigned char *data,
-                  unsigned long len)
+static int VerifyWith(const char *alg, const unsigned char *expected,
+                      int expectedLen, const unsigned char *data,
+                      unsigned long len)
 {
-    unsigned char computed[4];
+    unsigned char computed[32];
     unsigned long crc;
     int n;
 
-    if (!file || file->hashLen <= 0)
-        return 1;    /* nothing to verify */
+    if (expectedLen <= 0)
+        return 1;    /* no hash in the manifest: nothing to verify */
 
-    if (strcmp(file->hashAlg, "CRC32") == 0 ||
-        strcmp(file->hashAlg, "CIX_HASH_CRC32") == 0 ||
-        strcmp(file->hashAlg, "32") == 0)
+    if (_stricmp(alg, "CRC32") == 0 ||
+        _stricmp(alg, "CIX_HASH_CRC32") == 0 ||
+        strcmp(alg, "32") == 0)
     {
         crc = Crc32(data, len);
         computed[0] = (unsigned char)((crc >> 24) & 0xFF);
         computed[1] = (unsigned char)((crc >> 16) & 0xFF);
         computed[2] = (unsigned char)((crc >> 8) & 0xFF);
         computed[3] = (unsigned char)(crc & 0xFF);
-        n = file->hashLen < 4 ? file->hashLen : 4;
-        return memcmp(computed, file->hash, (size_t)n) == 0;
+        n = expectedLen < 4 ? expectedLen : 4;
     }
-    /* MD5/SHA* are not implemented in Phase A. */
-    return 1;
+    else if (_stricmp(alg, "MD5") == 0 ||
+             _stricmp(alg, "CIX_HASH_MD5") == 0 ||
+             (expectedLen == 16 && strcmp(alg, "") == 0))
+    {
+        Md5(data, len, computed);
+        n = expectedLen < 16 ? expectedLen : 16;
+    }
+    else if (_stricmp(alg, "SHA256") == 0 ||
+             _stricmp(alg, "CIX_HASH_SHA256") == 0 ||
+             strcmp(alg, "256") == 0 || expectedLen == 32)
+    {
+        Sha256(data, len, computed);
+        n = expectedLen < 32 ? expectedLen : 32;
+    }
+    else
+    {
+        return 1;    /* unknown algorithm: do not claim a mismatch */
+    }
+    return memcmp(computed, expected, (size_t)n) == 0;
+}
+
+/* Hash of the CAB payload (used by the PSF path). */
+int CixVerifyHash(CIXFILE *file, const unsigned char *data,
+                  unsigned long len)
+{
+    if (!file)
+        return 1;
+    if (file->sourceHashLen > 0)
+        return VerifyWith(file->sourceHashAlg, file->sourceHash,
+                          file->sourceHashLen, data, len);
+    return VerifyWith(file->hashAlg, file->hash, file->hashLen, data, len);
+}
+
+/* Hash of the produced output file (used after CIX delta application). */
+int CixVerifyTargetHash(CIXFILE *file, const unsigned char *data,
+                        unsigned long len)
+{
+    if (!file)
+        return 1;
+    return VerifyWith(file->hashAlg, file->hash, file->hashLen, data, len);
 }

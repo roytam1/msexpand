@@ -506,6 +506,7 @@ static int SfxVerifyOutputs(SFX *sfx, const char *targetDir)
     int i;
     int bad = 0;
 
+    ProgressStage("Verification", sfx->nVerify);
     for (i = 0; i < sfx->nVerify; ++i)
     {
         SFXVERIFY *v = &sfx->verify[i];
@@ -514,24 +515,33 @@ static int SfxVerifyOutputs(SFX *sfx, const char *targetDir)
         unsigned long len = 0;
         unsigned char digest[16];
         char got[33];
+        const char *status = "OK";
 
         JoinPath(path, sizeof(path), targetDir, v->target);
         if (_access(path, 0) != 0)
-            continue;
-        if (SfxReadFile(path, &data, &len) != 0)
         {
-            bad = 1;
-            continue;
+            status = "SKIP";
         }
-        Md5(data, len, digest);
-        free(data);
-        SfxHexOf(digest, (int)sizeof(digest), got);
-        if (_stricmp(got, v->hash) != 0)
+        else if (SfxReadFile(path, &data, &len) != 0)
         {
-            PrintMsg(MSG_SFX_VERIFY_FAIL, v->target, got, v->hash);
+            status = "FAIL";
             bad = 1;
         }
+        else
+        {
+            Md5(data, len, digest);
+            free(data);
+            SfxHexOf(digest, (int)sizeof(digest), got);
+            if (_stricmp(got, v->hash) != 0)
+            {
+                PrintMsg(MSG_SFX_VERIFY_FAIL, v->target, got, v->hash);
+                status = "FAIL";
+                bad = 1;
+            }
+        }
+        ProgressItem("Verification", i + 1, sfx->nVerify, v->target, status);
     }
+    ProgressSummary("Verification", sfx->nVerify - bad, sfx->nVerify);
     return bad ? -1 : 0;
 }
 
@@ -541,24 +551,44 @@ static int SfxVerifyOutputs(SFX *sfx, const char *targetDir)
 static void SfxDeleteArtifacts(SFX *sfx, const char *targetDir,
                                SFXWRITTEN *written, int nWritten)
 {
-    int i, k;
+    int i, k, nDel = 0, done = 0, ok = 0;
 
+    for (i = 0; i < nWritten; ++i)
+        for (k = 0; k < sfx->nDelete; ++k)
+        {
+            const char *pat = sfx->del[k].pattern;
+            if (PatternMatch(written[i].rel, pat, 1) ||
+                PatternMatch(OnlyFileName(written[i].rel), pat, 1))
+            {
+                ++nDel;
+                break;
+            }
+        }
+    if (!nDel)
+        return;
+
+    ProgressStage("Deletion", nDel);
     for (i = 0; i < nWritten; ++i)
     {
         for (k = 0; k < sfx->nDelete; ++k)
         {
             const char *pat = sfx->del[k].pattern;
+            char full[MAX_PATH];
+            int r;
             if (!PatternMatch(written[i].rel, pat, 1) &&
                 !PatternMatch(OnlyFileName(written[i].rel), pat, 1))
                 continue;
-            {
-                char full[MAX_PATH];
-                JoinPath(full, sizeof(full), targetDir, written[i].rel);
-                _unlink(full);
-            }
+            JoinPath(full, sizeof(full), targetDir, written[i].rel);
+            r = _unlink(full);
+            if (r == 0)
+                ++ok;
+            ++done;
+            ProgressItem("Deletion", done, nDel, written[i].rel,
+                         r == 0 ? "OK" : "FAIL");
             break;
         }
     }
+    ProgressSummary("Deletion", ok, nDel);
 }
 
 int SfxExpandFile(SFX *sfx, const char *destDir)

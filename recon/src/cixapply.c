@@ -91,8 +91,11 @@ int CixApplyCab(const char *cabPath, const char *outDir)
     XMLNODE *xml;
     CIX cix;
     unsigned char *done;
+    CIXFILE *f2;
+    CIXFILE *done2;
     int pass;
     int produced = 0;
+    int verified = 0;
     int i;
     int nEntries;
     char entry[MAX_PATH];
@@ -146,6 +149,7 @@ int CixApplyCab(const char *cabPath, const char *outDir)
         return 0;
     }
 
+    ProgressStage("Patching", cix.count);
     for (pass = 0; pass <= cix.count; ++pass)
     {
         int progress = 0;
@@ -222,12 +226,41 @@ int CixApplyCab(const char *cabPath, const char *outDir)
                     continue;
             }
             done[i] = 1;
+            ProgressItem("Patching", i + 1, cix.count, f->name, "OK");
             ++progress;
             ++produced;
         }
         if (!progress)
             break;
     }
+    /* Report each unresolved target once, after every pass had a chance to
+     * resolve its basis chain, instead of once per retry. */
+    for (i = 0, done2 = cix.files; done2; done2 = done2->next, ++i)
+        if (!done[i])
+            ProgressItem("Patching", i + 1, cix.count, done2->name, "FAIL");
+    ProgressSummary("Patching", produced, cix.count);
+
+    ProgressStage("Verification", cix.count);
+    for (i = 0, f2 = cix.files; f2; f2 = f2->next, ++i)
+    {
+        unsigned char *out = NULL;
+        unsigned long outLen = 0;
+        const char *status;
+        JoinPath(target, sizeof(target), outDir, f2->name);
+        if (ReadWhole(target, &out, &outLen) != 0)
+            status = "FAIL";
+        else if (!f2->hashLen)
+            status = "SKIP";
+        else if (CixVerifyTargetHash(f2, out, outLen))
+            status = "OK";
+        else
+            status = "FAIL";
+        free(out);
+        if (strcmp(status, "FAIL") != 0)
+            ++verified;
+        ProgressItem("Verification", i + 1, cix.count, f2->name, status);
+    }
+    ProgressSummary("Verification", verified, cix.count);
 
     free(done);
     CixFree(&cix);

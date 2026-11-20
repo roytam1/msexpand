@@ -18,8 +18,11 @@ typedef struct tagCIXFILE
     unsigned long sourceLength;
     char algId[32];
     char hashAlg[32];
-    unsigned char hash[CIX_MAX_HASH];
+    unsigned char hash[CIX_MAX_HASH];      /* hash of the output file */
     int hashLen;
+    char sourceHashAlg[32];
+    unsigned char sourceHash[CIX_MAX_HASH]; /* hash of the CAB payload */
+    int sourceHashLen;
     struct tagCIXFILE *next;
 } CIXFILE;
 
@@ -37,5 +40,7 @@ void CixFree(CIX *cix);
 CIXFILE *CixFind(CIX *cix, const char *name);
 int CixVerifyHash(CIXFILE *file, const unsigned char *data,
                   unsigned long len);
+int CixVerifyTargetHash(CIXFILE *file, const unsigned char *data,
+                        unsigned long len);
 
 #endif

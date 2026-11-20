@@ -120,15 +120,29 @@ static void DpxNestedCab(const char *cabPath, const char *targetDir)
         CreateDirectoryA(sub, NULL);
 
         inner = CabGetEntryCount(full);
-        for (j = 0; j < inner; ++j)
+        if (inner > 0)
         {
-            char name[MAX_PATH];
-            char to[MAX_PATH];
-            if (!CabGetEntryName(full, j, name, sizeof(name)))
-                continue;
-            JoinPath(to, sizeof(to), sub, name);
-            EnsureParentDir(to);
-            CabExtractOne(full, name, to);
+            int ok = 0;
+            ProgressStage("Nested CAB", inner);
+            for (j = 0; j < inner; ++j)
+            {
+                char name[MAX_PATH];
+                char to[MAX_PATH];
+                int r;
+                if (!CabGetEntryName(full, j, name, sizeof(name)))
+                {
+                    ProgressItem("Nested CAB", j + 1, inner, "?", "FAIL");
+                    continue;
+                }
+                JoinPath(to, sizeof(to), sub, name);
+                EnsureParentDir(to);
+                r = CabExtractOne(full, name, to);
+                if (r == 1)
+                    ++ok;
+                ProgressItem("Nested CAB", j + 1, inner, name,
+                             r == 1 ? "OK" : "FAIL");
+            }
+            ProgressSummary("Nested CAB", ok, inner);
         }
         (void)CixApplyCab(full, sub);
     }

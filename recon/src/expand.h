@@ -57,6 +57,9 @@
 #define MSG_PROGRESS           39
 #define MSG_ERROR_DESC         40
 #define MSG_SFX_VERIFY_FAIL    41
+#define MSG_PROGRESS_STAGE     42
+#define MSG_PROGRESS_ITEM      43
+#define MSG_PROGRESS_SUMMARY   44
 
 /* ------------------------------------------------------------------ */
 /* Global program state (addresses in comments are from the IDB)       */
@@ -110,6 +113,10 @@ const char *Msg(int id);
 int  PrintMsg(int id, ...);
 int  PrintMsgV(int id, va_list ap);
 void DisplayErrorMessage(int code);
+void ProgressStage(const char *stage, int total);
+void ProgressItem(const char *stage, int done, int total,
+                  const char *name, const char *status);
+void ProgressSummary(const char *stage, int ok, int total);
 
 /* expand.c */
 int  ParseArguments(int argc, char **argv);

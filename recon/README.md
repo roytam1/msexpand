@@ -73,9 +73,11 @@ needed ??the CAB reader is compiled into the EXE.
   that CAB, and a `_manifest_.cix.xml` in it is applied: RAW targets are
   copied and `PA30` deltas are decoded with their basis chains resolved. Real
   PA30 deltas use explicit per-segment code lengths, so the system
-  `msdelta.dll` is delegated to (`PA30_NO_OS=1` forces the partial native
-  decoder). Verified on `KB2959977`: all 513 CIX targets match their manifest
-  SHA256 hashes and lengths.
+  `msdelta.dll` is the default (`PA30_NO_OS=1` forces the partial native
+  decoder, which is now byte-exact). Staged progress is reported per file for nested CAB extraction, patching and verification, with a short summary. The manifest SHA256 hashes are now really computed for every produced target. Verified on `KB2959977`: all 513 CIX targets match their manifest
+  SHA256 hashes and lengths, as are the 209 targets of `KB5131083`, both
+  natively and via OS delegation. SFX `[Verify]` and `[Delete]` stages also
+  report per-file progress.
 * **PSTREAM/PSF containers (Phase A):** 48-byte header parsing, UTF-8 CIX
   XML index, `-D` listing, `-F:` selection, RAW source ranges, CRC32
   verification, and creation of nested output directories. Tested with the

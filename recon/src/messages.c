@@ -111,7 +111,13 @@ static const MSGENTRY g_Messages[] = {
     { MSG_ERROR_DESC,
       "\nError Description: %s\n" },
     { MSG_SFX_VERIFY_FAIL,
-      "Verification failed for %s: computed %s, expected %s.\n" }
+      "Verification failed for %s: computed %s, expected %s.\n" },
+    { MSG_PROGRESS_STAGE,
+      "\n%s: %d file(s)\n" },
+    { MSG_PROGRESS_ITEM,
+      "  [%s %d/%d] %s ... %s\n" },
+    { MSG_PROGRESS_SUMMARY,
+      "%s: %d of %d succeeded\n" }
 };
 
 const char *Msg(int id)
@@ -138,6 +144,26 @@ int PrintMsg(int id, ...)
     n = PrintMsgV(id, ap);
     va_end(ap);
     return n;
+}
+
+/* One line per item, so redirected logs stay readable.  `status` is a
+ * short word such as "OK", "FAIL" or "SKIP". */
+void ProgressStage(const char *stage, int total)
+{
+    PrintMsg(MSG_PROGRESS_STAGE, stage ? stage : "", total);
+}
+
+void ProgressItem(const char *stage, int done, int total,
+                  const char *name, const char *status)
+{
+    PrintMsg(MSG_PROGRESS_ITEM, stage ? stage : "", done, total,
+             name ? name : "", status ? status : "");
+    fflush(stdout);
+}
+
+void ProgressSummary(const char *stage, int ok, int total)
+{
+    PrintMsg(MSG_PROGRESS_SUMMARY, stage ? stage : "", ok, total);
 }
 
 void DisplayErrorMessage(int code)
