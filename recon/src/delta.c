@@ -6,6 +6,13 @@
 #include "hash.h"
 #include "pefix.h"
 
+#ifndef INT64_MIN
+#define INT64_MIN  ((__int64)0x8000000000000000i64)
+#endif
+#ifndef INT64_MAX
+#define INT64_MAX  ((__int64)0x7FFFFFFFFFFFFFFFi64)
+#endif
+
 /* ---------- LSB-first bit reader over little-endian byte stream ---------- */
 typedef struct tagBITR
 {
@@ -729,6 +736,89 @@ static void e8_untranslate(unsigned char *out, unsigned long outLen)
 
 /* ---------- PA30 PE seed transform ---------------------------------------- */
 /* RiftTable::Map: add the rift of the nearest entry whose left <= rva. */
+static __int64 rift_map(const RIFTENTRY *t, unsigned n, __int64 x)
+{
+    unsigned i;
+    __int64 rift = 0;
+    for (i = 0; i < n; ++i)
+    {
+        if (t[i].left <= x)
+            rift = t[i].right - t[i].left;
+        else
+            break;
+    }
+    return x + rift;
+}
+
+static int rift_cmp(const void *a, const void *b)
+{
+    const RIFTENTRY *x = (const RIFTENTRY *)a;
+    const RIFTENTRY *y = (const RIFTENTRY *)b;
+    if (x->left < y->left) return -1;
+    if (x->left > y->left) return 1;
+    return 0;
+}
+
+/* Invert a RiftTable: Map^-1(y) = y - (right-left) = y + (left-right). */
+static unsigned rift_reverse(const RIFTENTRY *a, unsigned an, RIFTENTRY *out)
+{
+    unsigned i;
+    for (i = 0; i < an; ++i)
+    {
+        out[i].left = a[i].right;
+        out[i].right = a[i].left;
+    }
+    qsort(out, an, sizeof(*out), rift_cmp);
+    return an;
+}
+
+/* Compose two RiftTables: result(x) = b(a(x)).  Breakpoints are the union of
+ * A's lefts and the preimages of B's lefts through A. */
+static unsigned rift_multiply(const RIFTENTRY *a, unsigned an,
+                              const RIFTENTRY *b, unsigned bn,
+                              RIFTENTRY *out)
+{
+    unsigned on = 0, i, j, k;
+    __int64 x;
+    if (!an) { if (bn) memcpy(out, b, (size_t)bn * sizeof(*out)); return bn; }
+    if (!bn) { memcpy(out, a, (size_t)an * sizeof(*out)); return an; }
+    out[on].left = INT64_MIN;
+    out[on].right = rift_map(b, bn, rift_map(a, an, INT64_MIN));
+    ++on;
+    for (i = 0; i < an; ++i)
+    {
+        out[on].left = a[i].left;
+        out[on].right = rift_map(b, bn, rift_map(a, an, a[i].left));
+        ++on;
+    }
+    for (j = 0; j < bn; ++j)
+    {
+        /* preimage of b[j].left under A, for each A interval */
+        for (k = 0; k < an; ++k)
+        {
+            __int64 lo = a[k].left;
+            __int64 hi = (k + 1 < an) ? a[k + 1].left : INT64_MAX;
+            __int64 rift = a[k].right - a[k].left;
+            x = b[j].left - rift;
+            if (x >= lo && x < hi)
+            {
+                out[on].left = x;
+                out[on].right = rift_map(b, bn, rift_map(a, an, x));
+                ++on;
+            }
+        }
+    }
+    qsort(out, on, sizeof(*out), rift_cmp);
+    /* collapse duplicate lefts */
+    k = 0;
+    for (i = 1; i < on; ++i)
+    {
+        if (out[i].left == out[k].left) out[k].right = out[i].right;
+        else out[++k] = out[i];
+    }
+    return k + 1;
+}
+
 static unsigned long pa30_map_rva(const RIFTENTRY *rt, unsigned rn,
                                   unsigned long rva)
 {
@@ -849,7 +939,7 @@ static int compo_decompress(BITR *br, const COMPFMT *fmt,
         }
 
 
-        if (getenv("PA30_SYMDBG") && pos < 512)
+        if (getenv("PA30_SYMDBG") && pos < 20000)
             fprintf(stderr, "SYM pos=%lu val=%lu len=%lu bitpos=%lu\n",
                     pos, sym.value, sym.length, br->bitpos);
         if (sym.length == 1)
@@ -861,27 +951,33 @@ static int compo_decompress(BITR *br, const COMPFMT *fmt,
             unsigned long len = sym.length;   /* type is the byte count */
             long dist = 0;
             long riftOff = 0;
+            long cpos;
+            long riftLimit = 0;
             unsigned ri;
-            /* Entries are sorted by `left` and map target interval
-             * [left, next_left) to source position `left + rift` = right,
-             * i.e. source = target + (right-left).  Pick the nearest entry
-             * with left <= pos. */
+            /* The DLL's OffsetRiftTable is keyed by the COMBINED position
+             * (srcLen + output position), mapping it to a combined source
+             * position.  Pick the entry with the largest left <= cpos. */
+            cpos = (long)pos + (long)srcLen;
+            /* An empty table means the implicit identity rift: the combined
+             * position maps back to the output position (off = -srcLen). */
+            riftOff = -(long)srcLen;
             for (ri = 0; ri < riftN; ++ri)
             {
-                if ((unsigned long)rift[ri].left <= pos)
+                if (rift[ri].left <= cpos)
                     riftOff = (long)(rift[ri].right - rift[ri].left);
                 else
                     break;
             }
+            if (sym.value == 0x54000UL && ri < riftN)
+                riftLimit = (long)(rift[ri].left - cpos);
 
             if (sym.value == 0x54000UL)
             {
-                /* With an empty rift table the identity map applies to the
-                 * combined source+output window: positions below srcLen read
-                 * the source, later positions read already-decoded output. */
-                long sp = (long)pos + riftOff;
                 unsigned long j;
-                dist = -riftOff;
+                long sp = cpos + riftOff;
+                if (getenv("PA30_SYMDBG") && pos == 1026)
+                    fprintf(stderr, "RIFT1026 cpos=%ld off=%ld sp=%ld len=%lu\n",
+                            cpos, riftOff, sp, len);
                 if (sp < 0 || (unsigned long)(sp + (long)len) > srcLen + pos)
                 {
                     if (getenv("PA30_DEBUG")) fprintf(stderr,
@@ -903,11 +999,9 @@ static int compo_decompress(BITR *br, const COMPFMT *fmt,
             }
             else if (sym.value < 0x54000UL)
             {
-                /* k<3 raw distances are relative to the start of the source
-                 * image in the combined [source][output] window, so the DLL
-                 * applies an implicit rift of -srcLen unconditionally (even
-                 * when a RIFT table is present for 0x54000 matches). */
-                dist = (long)(sym.value - 172032UL) + (long)srcLen;
+                /* k<3 raw distances are measured from the rift-mapped
+                 * position in the combined window. */
+                dist = (long)(sym.value - 172032UL) - riftOff;
                 if (getenv("PA30_SYMDBG") && pos < 512)
                     fprintf(stderr,
                         "  DIST pos=%lu raw=%ld riftOff=%ld dist=%ld len=%lu\n",
@@ -1518,6 +1612,8 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
         unsigned long peTimeStamp = 0;
         unsigned __int64 peImageBase = 0;
         const unsigned char *decompressSrc = source;
+        RIFTENTRY *orift = NULL;
+        unsigned oriftN = 0;
 
         /* The pre blob is bit-packed with the same 3-bit leader.  It holds
          * the target PE info, its RVA map, optional CLI metadata, and the
@@ -1575,6 +1671,103 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
                                 qi, rt[qi].left, rt[qi].right,
                                 rt[qi].right - rt[qi].left);
                 }
+            }
+        }
+
+        /* Build the OffsetRiftTable the DLL feeds to the decompressor:
+         *   t0 = sourceOffsetToRva (from the source PE sections)
+         *   t1 = t0 * compressionRiftTable
+         *   t2 = t1 * targetRvaToOffset
+         *   t3 = {srcLen -> 0} * t2   (shift into combined-buffer space)
+         */
+        {
+            RIFTENTRY t0[64], t1[512], t2[512], t2r[512], t3[512];
+            unsigned n0 = 0, n1, n2, n2r, n3, si;
+            unsigned long lfa0;
+            if (sourceLen >= 0x40)
+            {
+                lfa0 = rd32(source + 0x3C);
+                if (lfa0 + 24 <= sourceLen && memcmp(source + lfa0, "PE\0\0", 4) == 0)
+                {
+                    unsigned long nsec = rd16(source + lfa0 + 6);
+                    unsigned long opt = lfa0 + 24;
+                    unsigned long sh = opt + rd16(source + lfa0 + 20);
+                    unsigned s;
+                    t0[n0].left = 0; t0[n0].right = 0; ++n0;
+                    for (s = 0; s < nsec && n0 < 60; ++s)
+                    {
+                        unsigned long o = sh + 40 * s;
+                        unsigned long va = rd32(source + o + 12);
+                        unsigned long raw = rd32(source + o + 20);
+                        if (o + 40 > sourceLen) break;
+                        if (raw == 0 || va == 0) continue;
+                        t0[n0].left = (__int64)raw;
+                        t0[n0].right = (__int64)va;
+                        ++n0;
+                    }
+                    qsort(t0, n0, sizeof(*t0), rift_cmp);
+                }
+            }
+            if (n0 && rt && rn)
+            {
+                n1 = rift_multiply(t0, n0, rt, rn, t1);
+                n2 = rift_multiply(t1, n1, tmp, tmpN, t2);
+                if (getenv("PA30_DEBUG"))
+                {
+                    unsigned q;
+                    fprintf(stderr, "T1 n=%u:", n1);
+                    for (q = 0; q < n1 && q < 10; ++q)
+                        fprintf(stderr, " (%I64d->%I64d)", t1[q].left, t1[q].right);
+                    fprintf(stderr, "\nT2 n=%u:", n2);
+                    for (q = 0; q < n2 && q < 10; ++q)
+                        fprintf(stderr, " (%I64d->%I64d)", t2[q].left, t2[q].right);
+                    fprintf(stderr, "\n");
+                }
+                n2r = rift_reverse(t2, n2, t2r);
+                for (si = 0; si < n2r; ++si)
+                {
+                    t3[si].left = t2r[si].left + (__int64)sourceLen;
+                    t3[si].right = t2r[si].right;
+                }
+                n3 = n2r;
+                qsort(t3, n3, sizeof(*t3), rift_cmp);
+                if (getenv("PA30_DEBUG"))
+                {
+                    unsigned q;
+                    fprintf(stderr, "ORIFT n=%u\n", n3);
+                    for (q = 0; q < n3 && q < 12; ++q)
+                        fprintf(stderr, "  or[%u] %I64d -> %I64d\n",
+                                q, t3[q].left, t3[q].right);
+                }
+                orift = (RIFTENTRY *)malloc((size_t)(n3 ? n3 : 1) * sizeof(*orift));
+                if (orift)
+                {
+                    memcpy(orift, t3, (size_t)n3 * sizeof(*orift));
+                    oriftN = n3;
+                }
+            }
+        }
+
+        if (getenv("PA30_ORIFT"))
+        {
+            FILE *rf = fopen(getenv("PA30_ORIFT"), "rb");
+            if (rf)
+            {
+                unsigned rn2 = 0;
+                RIFTENTRY tmp2[512];
+                while (rn2 < 512 &&
+                       fread(&tmp2[rn2], sizeof(RIFTENTRY), 1, rf) == 1)
+                    ++rn2;
+                fclose(rf);
+                free(orift);
+                orift = (RIFTENTRY *)malloc((size_t)(rn2 ? rn2 : 1) * sizeof(*orift));
+                if (orift)
+                {
+                    memcpy(orift, tmp2, (size_t)rn2 * sizeof(*orift));
+                    oriftN = rn2;
+                }
+                if (getenv("PA30_DEBUG")) fprintf(stderr,
+                    "loaded ORIFT n=%u\n", oriftN);
             }
         }
 
@@ -1652,7 +1845,8 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
                 rc = -1;
             else
                 rc = compo_decompress(&pbr, &cf, decompressSrc, sourceLen,
-                    rt, rn, result, h.targetSize, (int)(h.flags & 0x1));
+                    orift ? orift : rt, orift ? oriftN : rn,
+                    result, h.targetSize, (int)(h.flags & 0x1));
             if (rc != 0)
             {
                 free(result);
@@ -1661,6 +1855,7 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
         }
         if (decompressSrc != source) free((void *)decompressSrc);
         free(tmp);
+        free(orift);
         free(rt);
         if (rc != 0)
         {

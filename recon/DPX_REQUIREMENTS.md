@@ -1146,3 +1146,27 @@ Phase D is the genuine open-ended piece.
     seed.  The remaining task is to derive that 77-entry RiftTable from the
     pre-blob / delta inputs (it is not the 88-entry compression map) and use
     it for rift matches.
+
+    **OffsetRiftTable derived and wired (part 35).**  Traced
+    `RiftTable::Multiply` (gdb: `msdelta_multiply.gdb`) and the decompiled
+    pipeline string: the DLL builds the decompressor's table as
+    `t0 = sourceOffsetToRva` (from the source PE sections: file offset -> RVA),
+    `t1 = t0 * compressionMap`, `t2 = t1 * targetRvaToOffset` (the first
+    pre-blob RiftTable), then **`ReverseRiftTable(t2)`** and shift every left
+    by `srcLen`.  `delta.c` now implements `rift_multiply`, `rift_reverse` and
+    this pipeline.  `msdelta_buildrift.gdb` confirmed the 77-entry input table
+    and its Add calls.
+
+    Also fixed the rift semantics from ground truth (`msdelta_riftpos.gdb`):
+    the OffsetRiftTable is keyed by the **combined** position `srcLen+out`;
+    a 0x54000 match copies from `MapRift(cpos)`, while a k<3 distance D reads
+    `MapRift(cpos) - D` (the DLL rebases normal matches through the same map).
+    An empty table implies `off = -srcLen`.
+
+    Verified: our derived ORIFT entries now match the DLL's dumped table
+    (`(49544,0), (50648,1056), (133056,9408), ...`).  Blob 1 improves to
+    **44338/307200 wrong, first divergence 6948** (was 85709).  At 6948 the
+    symbol stream is identical and the divergence is a seed byte at file
+    0x7AE0 (import-table region): our seed still differs from the DLL's in
+    2021 bytes, so the remaining work is the import/export PE transforms.
+    Blob 0, generated vectors, PA19, XPRESS, LZX and LZMS remain byte-exact.
