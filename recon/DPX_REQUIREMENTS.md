@@ -1007,3 +1007,25 @@ Phase D is the genuine open-ended piece.
     the first real delta stay byte-exact; chained deltas still need
     `msdelta.dll`.  Next step: use a debugger oracle on the DLL's pre-blob
     reader to recover the exact bit layout between bit 131 and bit 1644.
+
+    **gdb oracle attempt (part 29).**  Set up MinGW gdb (`diag/msdelta_trace.gdb`)
+    with `break ApplyDeltaA` + Python breakpoints at the Win7 DLL's
+    `PortableExecutableInfo` / `RiftTable` / `CliMetadata` / `IntFormat`
+    `InternalFromBitReader` RVAs (base derived from `$pc` at the export, since
+    ASLR rebases the DLL).  Two findings:
+
+      - The bundled `msdelta.dll` is Win7 6.1.7600; the byte-exact OS path on
+        KB2959977 actually uses `C:\Windows\SysWOW64\msdelta.dll` (a newer
+        build).  The Win7 DLL applies the generated vectors but **rejects the
+        Win8.1 blob 1 before PEInfo is read** — none of the four reader
+        breakpoints are hit.  So it cannot serve as the oracle for this delta.
+      - The system DLL applies the delta correctly, but its code is a
+        different build: the Win7 byte signatures do not occur in it, so the
+        decompiled RVAs cannot be reused and it has no symbols for its
+        internal readers.
+
+    The oracle path therefore needs either (a) a Win7-generated PE delta with
+    a pre blob, traceable with the decompiled DLL, to nail the reader layout,
+    or (b) a signature/code search in the system DLL to relocate the reader
+    functions.  `diag/msdelta_trace.gdb` and `diag/msdelta_apply.gdb` are kept
+    as the reusable starting point.  No tracked source changed this round.
