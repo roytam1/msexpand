@@ -1183,3 +1183,17 @@ Phase D is the genuine open-ended piece.
     was changed to 0x178DF though the DLL left it), because the DLL uses a
     per-byte usage/hint map produced by its transform pipeline rather than a
     blind RVA scan.  Reproducing that hint/usage map is the last step.
+
+    **Precise import rewrite (part 37).**  Instead of guessing which DWORDs
+    are pointers, `pa30_rewrite_imports()` now parses the PE import directory:
+    it walks the 20-byte descriptors and both thunk arrays, rewriting only
+    the OriginalFirstThunk / Name / FirstThunk fields and the thunk entries
+    through `MapRva`.  This avoids the ASCII false positives of the blind
+    scan (file 0x83FC `"StringW"` is now left untouched, matching the DLL).
+
+    Result: seed diff 1292 -> 1216, blob 1 **43454/307200 wrong with the first
+    83630 bytes byte-exact** (first divergence 4878 -> 83630).  The remaining
+    seed diff starts at file 0x2F40 (a `TransformInferredRelocations`
+    over-rewrite in .text) and the remaining decode divergence at output 83630
+    is a repeat-match (0x54002) whose history distance differs from the DLL's.
+    Blob 0, generated vectors, PA19, XPRESS, LZX and LZMS stay byte-exact.

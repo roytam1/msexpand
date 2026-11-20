@@ -924,8 +924,82 @@ static void pa30_mark_import_section(unsigned char *buf, unsigned long len)
     (void)nrva;
 }
 
-/* RiftTransformRelocationsI386 / imports: rewrite dwords that are valid
- * RVAs (rather than absolute VAs) through MapRva. */
+/* Rewrite the actual import directory structures (descriptor fields and
+ * thunk entries) through MapRva, leaving unrelated data alone. */
+static unsigned long pa30_rva_off(const unsigned char *b, unsigned long len,
+                                  unsigned long rva)
+{
+    unsigned long pe, opt, sh, nsec, s;
+    if (len < 0x40) return 0xFFFFFFFFUL;
+    pe = rd32(b + 0x3C);
+    if (pe + 24 > len || memcmp(b + pe, "PE\0\0", 4)) return 0xFFFFFFFFUL;
+    nsec = rd16(b + pe + 6);
+    opt = pe + 24;
+    sh = opt + rd16(b + pe + 20);
+    for (s = 0; s < nsec && sh + 40 * s + 40 <= len; ++s)
+    {
+        unsigned long o = sh + 40 * s;
+        unsigned long va = rd32(b + o + 12);
+        unsigned long vs = rd32(b + o + 8);
+        unsigned long rs = rd32(b + o + 16);
+        unsigned long raw = rd32(b + o + 20);
+        unsigned long span = vs ? vs : rs;
+        if (rva >= va && rva < va + span)
+            return raw + (rva - va);
+    }
+    return 0xFFFFFFFFUL;
+}
+
+static void pa30_set_u32(unsigned char *b, unsigned long off, unsigned long v)
+{
+    b[off] = (unsigned char)(v & 0xFF);
+    b[off + 1] = (unsigned char)((v >> 8) & 0xFF);
+    b[off + 2] = (unsigned char)((v >> 16) & 0xFF);
+    b[off + 3] = (unsigned char)((v >> 24) & 0xFF);
+}
+
+static void pa30_rewrite_imports(unsigned char *buf, unsigned long len,
+                                 const RIFTENTRY *rt, unsigned rn)
+{
+    unsigned long pe, opt, imp, off, d;
+    if (len < 0x40) return;
+    pe = rd32(buf + 0x3C);
+    if (pe + 24 > len || memcmp(buf + pe, "PE\0\0", 4)) return;
+    opt = pe + 24;
+    if (rd16(buf + opt) != 0x10B || opt + 0x70 > len) return;
+    imp = rd32(buf + opt + 0x60 + 8);
+    if (!imp) return;
+    off = pa30_rva_off(buf, len, imp);
+    if (off == 0xFFFFFFFFUL) return;
+    for (d = 0; d < 256 && off + 20 * (d + 1) <= len; ++d)
+    {
+        unsigned long o = off + 20 * d;
+        unsigned long oft = rd32(buf + o);
+        unsigned long name = rd32(buf + o + 12);
+        unsigned long ft = rd32(buf + o + 16);
+        unsigned long k;
+        if (!oft && !name && !ft) break;
+        if (oft) pa30_set_u32(buf, o, pa30_map_rva(rt, rn, (long)oft));
+        if (name) pa30_set_u32(buf, o + 12, pa30_map_rva(rt, rn, (long)name));
+        if (ft) pa30_set_u32(buf, o + 16, pa30_map_rva(rt, rn, (long)ft));
+        for (k = 0; k < 2; ++k)
+        {
+            unsigned long t = k ? ft : oft;
+            unsigned long to = t ? pa30_rva_off(buf, len, t) : 0xFFFFFFFFUL;
+            unsigned i;
+            if (to == 0xFFFFFFFFUL) continue;
+            for (i = 0; i < 4096 && to + 4 * (i + 1) <= len; ++i)
+            {
+                unsigned long v = rd32(buf + to + 4 * i);
+                if (!v) break;
+                pa30_set_u32(buf, to + 4 * i,
+                             pa30_map_rva(rt, rn, (long)v));
+            }
+        }
+    }
+}
+
+/* Blind RVA scan (kept for comparison via PA30_BLIND). */
 static void pa30_transform_rvas(unsigned char *buf, unsigned long len,
                                 const RIFTENTRY *rt, unsigned rn,
                                 unsigned long sizeOfImage,
@@ -1931,8 +2005,11 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
                         if (getenv("PA30_RVAREWRITE"))
                         {
                             pa30_mark_import_section(prepared, sourceLen);
-                            pa30_transform_rvas(prepared, sourceLen, rt, rn,
-                                sizeOfImage, sizeOfHeaders);
+                            if (getenv("PA30_BLIND"))
+                                pa30_transform_rvas(prepared, sourceLen, rt, rn,
+                                    sizeOfImage, sizeOfHeaders);
+                            else
+                                pa30_rewrite_imports(prepared, sourceLen, rt, rn);
                         }
                     }
                     decompressSrc = prepared;
