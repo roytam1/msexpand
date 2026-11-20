@@ -1316,3 +1316,45 @@ Phase D is the genuine open-ended piece.
     add exactly when its `left` falls strictly inside a rift interval being
     reversed.  Implementing this range-selection in `rift_reverse()` is the
     last step; default stays 5858/307200 with all regressions green.
+
+    **Pipeline fully traced and ported (part 46).**  msdelta_pipeline.gdb
+    broke on every RiftTable::Multiply, Reverse, Sort and
+    OffsetRiftTable::Init and dumped each table.  The decompress path is
+    **three Multiply calls plus one Reverse**, not the shift we assumed:
+
+      1. `t1  = Multiply(sourceOffsetToRva(6), compressionRiftTable(88))`  -> 95
+      2. `t2  = Multiply(t1(95), targetRvaToOffset(6))`                     -> 99
+      3. `t2r = Reverse(t2)`                                                -> 82
+      4. `t3  = Multiply({srcLen -> 0}(1), Sort(t2r)(82))`                  -> 83
+      5. `OffsetRiftTable` input = t3 with `left > 0`, dropping an entry
+         whose rift equals the previous entry's                      -> 77
+
+    (The earlier "t2 = 82" label was wrong: 82 is the Reverse output.  The
+    `Sort` between Reverse and Multiply #3 matters; feeding the unsorted
+    Reverse output collapses the result to one entry.)
+
+    **Multiply port.**  `rift_get_rift` now matches the DLL exactly (when
+    `pos` precedes every entry it returns the *last* entry's rift and
+    `end = t[0].left - 1`).  The main loop walks each A interval, emitting
+    `(left_i, right_i + rift_B)` and then, while
+    `(end_i - left) > (endB - pos)`, `(left + (endB-pos) + 1,
+    (endB+1) + rift_B(endB+1))`.  The key detail that cost a rewrite: the
+    comparison advances from the *previous B position* (`endB+1`), not from
+    the previous mapped right.  The sentinel block mirrors the main loop
+    downward from `INT64_MIN` using `x = lastRift + INT64_MIN`.
+
+    **Reverse port.**  Literal translation of `msdelta.dll.c:23595-23950`
+    with a 4-dword-per-entry pending work list.  Two traps: the second binary
+    search advances a `_QWORD*` by 2 (16 bytes, not 8), and the v30/v31
+    branch skips the Add when `temp[v63-1].left >= rcursor` (`>=`, not
+    `>`).  With both fixed it reproduces the DLL's 82-entry Reverse output
+    exactly (verified offline against `tr_srt6`).
+
+    **Result.**  Offline harnesses `diag/multest.c` and
+    `diag/reversetest.c` reproduce every intermediate table byte-for-byte
+    (95/99/82/83 entries), and the native decoder's ORIFT now matches the
+    DLL's `OffsetRiftTable` input exactly (77 entries, including
+    `(153856,-158344)`).  blob 1 drops from 5858 to **4379/307200** wrong
+    (first divergence 6948); with the DLL's exact seed the residual is the
+    known **915/307200** seed-hint-map gap (first divergence 277460).  blob 0,
+    d0, d1, PA19, XPRESS, LZX and LZMS all remain byte-exact.

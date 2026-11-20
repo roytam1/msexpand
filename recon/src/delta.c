@@ -786,186 +786,371 @@ static int rift_cmp(const void *a, const void *b)
     return 0;
 }
 
-/* Invert a RiftTable: Map^-1(y) = y - (right-left) = y + (left-right). */
+/* Invert a RiftTable: Map^-1(y) = y - (right-left) = y + (left-right).
+ * Faithful port of compo::RiftTable::Reverse (msdelta.dll.c:23595-23950)
+ * with a2 = a3 = 0: it sweeps the input, emitting the swapped entries plus
+ * extra (x, x - rift) entries for breakpoints that fall inside a rift
+ * interval, keeping a pending-entry work list in `temp`. */
 static unsigned rift_reverse(const RIFTENTRY *a, unsigned an, RIFTENTRY *out)
 {
-    unsigned i;
-    for (i = 0; i < an; ++i)
+    unsigned temp[4096];            /* 4 dwords per pending entry */
+    unsigned on = 0;
+    unsigned v13, v14, v16, v18, v22, v24, v27, v28, v32, v34, v38, v41, v43, v47, v48, v51, v63, v65;
+    __int64 v19;
+    __int64 startPos = 0;
+
+    if (an == 0) return 0;
+
+    if (an == 1)
     {
-        out[i].left = a[i].right;
-        out[i].right = a[i].left;
+        out[on].left = startPos;
+        out[on].right = startPos + (a[0].right - a[0].left);
+        return 1;
     }
-    qsort(out, an, sizeof(*out), rift_cmp);
-    return an;
-}
-
-/* RiftTable::GetRift: return the rift of the entry with the largest
- * left <= pos, and store that entry's successor left - 1 in *end (or
- * INT64_MAX for the last entry). */
-static __int64 rift_get_rift(const RIFTENTRY *t, unsigned n, __int64 pos,
-                             __int64 *end)
-{
-    unsigned i;
-    __int64 rift = 0;
-    *end = n ? t[0].left - 1 : INT64_MIN;
-    for (i = 0; i < n && t[i].left <= pos; ++i)
     {
-        rift = t[i].right - t[i].left;
-        *end = (i + 1 < n) ? t[i + 1].left - 1 : INT64_MAX;
-    }
-    return rift;
-}
-
-/* Port of RiftTable::Multiply's sentinel block (msdelta.dll.c:24042-24086),
- * which generates the negative-preimage entries using 32-bit half-word
- * arithmetic. */
-static unsigned rift_multiply_sentinel(const RIFTENTRY *a, unsigned an,
-                                       const RIFTENTRY *b, unsigned bn,
-                                       RIFTENTRY *out, unsigned on)
-{
-    unsigned v7 = (unsigned)(a[0].left >> 32);
-    unsigned v8 = (unsigned)a[0].left;
-    unsigned v9;
-    __int64 v45, lastRift, x, v42, rift;
-    unsigned v11, v12;
-    long v14, pos, v15, v16, v17, v19, v20, v21, v46, v47;
-
-    if (v7 == 0x80000000u && v8 == 0)
-        return on;                       /* first entry already a sentinel */
-    v9 = (v8 == 0);
-    v45 = ((__int64)(v7 - v9) << 32) | (unsigned)(v8 - 1);
-    lastRift = a[an - 1].right - a[an - 1].left;
-    v11 = (unsigned)lastRift;
-    v12 = (unsigned)(lastRift >> 32) + 0x80000000u;
-    x = ((__int64)v12 << 32) | (unsigned)v11;
-    rift = rift_get_rift(b, bn, x, &v42);
-    out[on].left = INT64_MIN;
-    out[on].right = x + rift;
-    ++on;
-    v14 = 0x80000000L;
-    pos = 0;
-    v17 = (long)((unsigned)v42 - v11);
-    v16 = (long)((v42 - x) >> 32);
-    v15 = v17;
-    if ((unsigned __int64)(v45 + INT64_MIN) >
-        (unsigned __int64)(((__int64)v16 << 32) | (unsigned)v17))
-    {
-        do
+        unsigned k;
+        int allsame = 1;
+        for (k = 1; k < an; ++k)
+            if (a[k].left != a[0].left) { allsame = 0; break; }
+        if (allsame)
         {
-            for (;;)
+            out[on].left = startPos;
+            out[on].right = startPos + (a[0].right - a[0].left);
+            return 1;
+        }
+    }
+
+    memset(temp, 0, sizeof(temp));
+    v65 = 0;
+    v14 = an;
+
+    v13 = 0;
+    do {
+        if (a[v13].left > startPos) break;
+        ++v13;
+    } while (v14 > v13);
+    if (v13 == 0) v13 = v14;
+
+    v16 = (v13 < v14) ? 1u : 0u;
+    v43 = v13 - 1;
+    v48 = v13 - 1;
+
+    for (;;)
+    {
+        v18 = v16 ? v13 : 0;
+        v47 = v18;
+
+        for (;;)
+        {
+            __int64 delta, cursor, rcursor;
+            unsigned v61, v56, v62, v64, v53, v57;
+
+            v19 = a[v48].right - a[v48].left;
+
+            delta = a[v18].left - startPos;
+            v56 = (unsigned)delta;
+            v61 = (unsigned)((unsigned __int64)delta >> 32);
+
+            cursor = startPos + v19;
+            v62 = (unsigned)cursor;
+            v64 = (unsigned)((unsigned __int64)cursor >> 32);
+
+            if (cursor != INT64_MIN)
             {
-                v19 = (long)(((((__int64)v16 << 32) | (unsigned __int64)v15) + 1 +
-                              (((__int64)v14 << 32) | (unsigned __int64)pos)) >> 32);
-                pos = (long)((__int64)pos + v15 + 1);
-                v47 = v19;
-                v20 = (long)v42 + 1;
-                v21 = (long)rift_get_rift(b, bn, (__int64)v42 + 1, &v42);
-                out[on].left = ((__int64)v47 << 32) | (unsigned long)pos;
-                out[on].right = (__int64)v20 + v21;
-                ++on;
-                v14 = v47;
-                v46 = (long)(((unsigned __int64)(v42 - v20)) >> 32);
-                v15 = (long)(v42 - v20);
-                if ((long)(((__int64)(v45 - (((__int64)v47 << 32) |
-                                  (unsigned long)pos))) >> 32) <= v46)
-                    break;
-                v16 = v46;
+                unsigned __int64 limit = (unsigned __int64)INT64_MIN
+                                       - (unsigned __int64)v19
+                                       - (unsigned __int64)startPos;
+                if ((unsigned __int64)delta > limit)
+                {
+                    delta = (__int64)limit;
+                    v61 = (unsigned)((unsigned __int64)delta >> 32);
+                    v56 = (unsigned)delta;
+                }
             }
-            if ((long)(((__int64)(v45 - (((__int64)v47 << 32) |
-                              (unsigned long)pos))) >> 32) < v46)
-                break;
-            v16 = v46;
-        } while ((long)v45 - (unsigned long)pos > v15);
+            cursor = ((__int64)v64 << 32) | v62;
+            rcursor = cursor + delta;
+            v53 = (unsigned)rcursor;
+            v57 = (unsigned)((unsigned __int64)rcursor >> 32);
+
+            if (delta != 0)
+            {
+                unsigned *v49, *v25, *v26;
+
+                v22 = 0;
+                v51 = 0;
+                if (v65)
+                {
+                    unsigned *v23 = temp + 2;
+                    do {
+                        if (!*v23 && v23[1] == 0x80000000u) break;
+                        if (*(__int64 *)v23 >= cursor) break;
+                        ++v22; v23 += 4;
+                    } while (v65 > v22);
+                    v51 = v22;
+                }
+                v63 = v22;
+                v24 = v22;
+                if (v65 <= v22) goto LABEL_61;
+
+                v49 = temp + 4 * v22;
+                v25 = v49;
+                do {
+                    if ((v53 || v57 != 0x80000000u) &&
+                        *(__int64 *)v25 > rcursor) break;
+                    ++v24; v25 += 4;
+                } while (v65 > v24);
+                v26 = v49;
+                v63 = v24;
+                if (v22 == v24)
+                {
+LABEL_61:
+                    out[on].left = cursor;
+                    out[on].right = startPos;
+                    ++on;
+                }
+                else
+                {
+                    if (cursor >= *(__int64 *)v49)
+                    {
+                        v62 = v49[0]; v64 = v49[1];
+                        cursor = ((__int64)v64 << 32) | v62;
+                    }
+                    else
+                    {
+                        out[on].left = cursor;
+                        out[on].right = startPos;
+                        ++on;
+                        v26 = v49;
+                    }
+                    v27 = v63 - 1;
+                    if (v63 - 1 > v22)
+                    {
+                        __int64 *v29 = (__int64 *)(v26 + 2);
+                        v28 = v27 - v22;
+                        do {
+                            out[on].left = *v29;
+                            out[on].right = *v29 - v19;
+                            ++on;
+                            v29 += 2;
+                            --v28;
+                        } while (v28);
+                        v22 = v51;
+                    }
+                    {
+                        unsigned v30 = temp[4 * v63 - 2];
+                        unsigned v31 = temp[4 * v63 - 1];
+                        __int64 tl = ((__int64)v31 << 32) | v30;
+                        if ((!v30 && v31 == 0x80000000u) ||
+                            ((v53 || v57 != 0x80000000u) && (tl >= rcursor)))
+                        {
+                            rcursor = tl;
+                            v53 = v30; v57 = v31;
+                        }
+                        else
+                        {
+                            out[on].left = tl;
+                            out[on].right = tl - v19;
+                            ++on;
+                        }
+                    }
+                    v24 = v63;
+                }
+
+                if (v22 == v24)
+                {
+                    v32 = v65;
+                    if (v65 > v22)
+                    {
+                        unsigned *v33 = temp + 4 * v65;
+                        v34 = v65 - v22;
+                        do {
+                            unsigned *v35 = v33;
+                            v33 -= 4;
+                            *v35++ = *v33;
+                            *v35++ = v33[1];
+                            *v35 = v33[2];
+                            v35[1] = v33[3];
+                            --v34;
+                        } while (v34);
+                        v24 = v63;
+                        goto LABEL_73;
+                    }
+                }
+                else
+                {
+                    if (v22 + 1 == v24)
+                    {
+LABEL_73:
+                        v32 = v65;
+                        goto LABEL_74;
+                    }
+                    v32 = v65;
+                    if (v24 < v65)
+                    {
+                        unsigned *v36 = temp + 4 * v24;
+                        unsigned *v37 = temp + 4 * v22 + 4;
+                        v38 = v65 - v24;
+                        do {
+                            unsigned *v39 = v36;
+                            unsigned *v40 = v37;
+                            v36 += 4; v37 += 4;
+                            *v40 = *v39++;
+                            *++v40 = *v39++;
+                            *++v40 = *v39;
+                            v40[1] = v39[1];
+                            --v38;
+                        } while (v38);
+                        v22 = v51;
+                        v24 = v63;
+                        goto LABEL_73;
+                    }
+                }
+LABEL_74:
+                v18 = v47;
+                v41 = 2 * v22;
+                v65 = (v22 - v24) + 1 + v32;
+                temp[2 * v41] = v62;
+                temp[2 * v41 + 1] = v64;
+                temp[2 * v41 + 2] = v53;
+                temp[2 * v41 + 3] = v57;
+            }
+
+            {
+                __int64 newStart = (((__int64)v61 << 32) | v56) + startPos;
+                startPos = newStart;
+                if (newStart == a[v18].left) break;
+            }
+        }
+
+        v48 = v18;
+        if (v43 != v18)
+        {
+            v13 = v18 + 1;
+            v16 = ((v18 + 1) < an) ? 1u : 0u;
+            continue;
+        }
+        break;
     }
     return on;
 }
 
-/* Compose two RiftTables: result(x) = b(a(x)).  Breakpoints are the union of
- * A's lefts and the preimages of B's lefts through A. */
+/* RiftTable::GetRift: return the rift of the entry with the largest
+ * left <= pos, and store the successor's left - 1 in *end (or INT64_MAX
+ * for the last entry).  When pos precedes every entry the DLL returns
+ * the last entry's rift and *end = t[0].left - 1. */
+static __int64 rift_get_rift(const RIFTENTRY *t, unsigned n, __int64 pos,
+                             __int64 *end)
+{
+    unsigned lo, hi, idx;
+    if (!n)
+    {
+        *end = INT64_MAX;
+        return 0;
+    }
+    if (pos >= t[0].left)
+    {
+        lo = 0;
+        hi = n - 1;
+        while (lo < hi)
+        {
+            unsigned mid = (lo + hi + 1) >> 1;
+            if (t[mid].left <= pos) lo = mid;
+            else hi = mid - 1;
+        }
+        idx = lo;
+        *end = (n - idx > 1) ? t[idx + 1].left - 1 : INT64_MAX;
+        return t[idx].right - t[idx].left;
+    }
+    *end = t[0].left - 1;
+    return t[n - 1].right - t[n - 1].left;
+}
+
+/* Compose two RiftTables: result(x) = b(a(x)).
+ * Faithful port of compo::RiftTable::Multiply (msdelta.dll.c:23952-24157).
+ * The sentinel block emits the entries below a[0].left; the main loop walks
+ * each A interval, emitting the mapped breakpoint and every B breakpoint that
+ * falls inside it. */
 static unsigned rift_multiply(const RIFTENTRY *a, unsigned an,
                               const RIFTENTRY *b, unsigned bn,
                               RIFTENTRY *out)
 {
-    unsigned on = 0, j;
+    unsigned on = 0, i;
+
     if (!an) { if (bn) memcpy(out, b, (size_t)bn * sizeof(*out)); return bn; }
     if (!bn) { memcpy(out, a, (size_t)an * sizeof(*out)); return an; }
-    if (!getenv("PA30_MULLOOP"))
+
+    /* Sentinel block (msdelta.dll.c:24042-24087 / asm 0x1002F38C-0x1002F46C):
+     * emits the entries below a[0].left by walking B's breakpoints. */
+    if (a[0].left != INT64_MIN)
     {
-        /* legacy simplified composition */
-        unsigned i, k;
-        __int64 x;
+        __int64 lastRift = a[an - 1].right - a[an - 1].left;
+        __int64 x = lastRift + INT64_MIN;
+        __int64 endB, rift, acc, d, endA = a[0].left - 1;
+
+        rift = rift_get_rift(b, bn, x, &endB);
         out[on].left = INT64_MIN;
-        out[on].right = rift_map(b, bn, rift_map(a, an, INT64_MIN));
+        out[on].right = x + rift;
         ++on;
-        for (i = 0; i < an; ++i)
+        acc = INT64_MIN;
+        d = endB - x;
+        if ((unsigned __int64)(endA + INT64_MIN) > (unsigned __int64)d)
         {
-            out[on].left = a[i].left;
-            out[on].right = rift_map(b, bn, rift_map(a, an, a[i].left));
-            ++on;
-        }
-        for (j = 0; j < bn; ++j)
-            for (k = 0; k < an; ++k)
+            while (on < 400)
             {
-                __int64 lo = a[k].left;
-                __int64 hi = (k + 1 < an) ? a[k + 1].left : INT64_MAX;
-                __int64 rift = a[k].right - a[k].left;
-                x = b[j].left - rift;
-                if (x >= lo && x < hi)
-                {
-                    out[on].left = x;
-                    out[on].right = rift_map(b, bn, rift_map(a, an, x));
-                    ++on;
-                }
-            }
-    }
-    else
-    {
-        /* Faithful translation of RiftTable::Multiply's main loop using
-         * explicit 32-bit half-word arithmetic. */
-        for (j = 0; j < an; ++j)
-        {
-            __int64 aLeft = a[j].left;
-            __int64 aRight = a[j].right;
-            __int64 end = (j + 1 < an) ? aRight - 1 : INT64_MAX;
-            __int64 p = aRight, v41;
-            unsigned rift;
-            unsigned loP, hiP, carry, v33, v34, v35hi, v47, v37;
-            if (j + 1 < an && aRight == aLeft) continue;
-            rift = (unsigned)rift_get_rift(b, bn, p, &v41);
-            out[on].left = aLeft;
-            out[on].right = p + rift;
-            ++on;
-            loP = (unsigned)p;
-            hiP = (unsigned)(p >> 32);
-            carry = ((unsigned)v41 < loP) ? 1u : 0u;
-            v33 = (unsigned)v41 - loP;
-            v34 = (unsigned)aLeft;
-            v35hi = (unsigned)(aLeft >> 32);
-            v47 = (unsigned)(v41 >> 32) - (carry + hiP);
-            while ((unsigned __int64)(end - aLeft) >
-                   (unsigned __int64)(((__int64)v47 << 32) | v33))
-            {
-                unsigned v50 = v33 + 1u + v34;
-                __int64 tmp = (((__int64)v47 << 32) | v33) + 1 +
-                              (((__int64)v35hi << 32) | v34);
-                unsigned v49hi = (unsigned)(tmp >> 32);
-                __int64 v38 = v41 + 1;
-                v37 = (unsigned)(v38 >> 32);
-                rift = (unsigned)rift_get_rift(b, bn, v38, &v41);
-                out[on].left = ((__int64)v49hi << 32) | v50;
-                out[on].right = v38 + rift;
+                __int64 pos;
+                acc += d + 1;
+                pos = endB + 1;
+                rift = rift_get_rift(b, bn, pos, &endB);
+                out[on].left = acc;
+                out[on].right = pos + rift;
                 ++on;
-                carry = ((unsigned)v41 < (unsigned)v38) ? 1u : 0u;
-                v33 = (unsigned)v41 - (unsigned)v38;
-                v34 = v50;
-                v35hi = v49hi;
-                v47 = (unsigned)(v41 >> 32) - (carry + v37);
+                d = endB - pos;
+                if ((unsigned __int64)(endA - acc) <= (unsigned __int64)d)
+                    break;
             }
         }
     }
+
+    /* Main loop (msdelta.dll.c:24088-24151). */
+    for (i = 0; i < an; ++i)
+    {
+        __int64 left_i = a[i].left, right_i = a[i].right, end_i;
+        __int64 endB, rift, prevLeft, prevPos, prevEnd;
+
+        if (i + 1 >= an)
+            end_i = 0x7FFFFFFFFFFFFFFF;
+        else if (a[i + 1].left == left_i)
+            continue;                   /* duplicate-left entry is skipped */
+        else
+            end_i = a[i + 1].left - 1;
+
+        rift = rift_get_rift(b, bn, right_i, &endB);
+        out[on].left = left_i;
+        out[on].right = right_i + rift;
+        ++on;
+
+        prevLeft = left_i;
+        prevPos = right_i;
+        prevEnd = endB;
+        while (on < 400 &&
+               (unsigned __int64)(end_i - prevLeft) >
+               (unsigned __int64)(prevEnd - prevPos))
+        {
+            __int64 nl = prevLeft + (prevEnd - prevPos) + 1;
+            __int64 np = prevEnd + 1;
+            __int64 ne, r2 = rift_get_rift(b, bn, np, &ne);
+            out[on].left = nl;
+            out[on].right = np + r2;
+            ++on;
+            prevLeft = nl;
+            prevPos = np;
+            prevEnd = ne;
+        }
+    }
+
     qsort(out, on, sizeof(*out), rift_cmp);
     {
-        unsigned i, k = 0;
+        unsigned k = 0;
         for (i = 1; i < on; ++i)
         {
             if (out[i].left == out[k].left) out[k].right = out[i].right;
@@ -2040,14 +2225,15 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
         }
 
         /* Build the OffsetRiftTable the DLL feeds to the decompressor:
-         *   t0 = sourceOffsetToRva (from the source PE sections)
-         *   t1 = t0 * compressionRiftTable
-         *   t2 = t1 * targetRvaToOffset
-         *   t3 = {srcLen -> 0} * t2   (shift into combined-buffer space)
-         */
+         *   t0  = sourceOffsetToRva (from the source PE sections)
+         *   t1  = t0 * compressionRiftTable
+         *   t2  = t1 * targetRvaToOffset
+         *   t2r = Reverse(t2)
+         *   t3  = {srcLen -> 0} * t2r   (shift into combined-buffer space)
+         * then keep the positive-left entries, dropping repeated rifts. */
         {
             RIFTENTRY t0[64], t1[512], t2[512], t2r[512], t3[512];
-            unsigned n0 = 0, n1, n2, n2r, n3, si;
+            unsigned n0 = 0, n1, n2, n2r, n3;
             unsigned long lfa0;
             if (sourceLen >= 0x40)
             {
@@ -2075,6 +2261,9 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
             }
             if (n0 && rt && rn)
             {
+                RIFTENTRY sh;
+                unsigned k, w;
+
                 n1 = rift_multiply(t0, n0, rt, rn, t1);
                 n2 = rift_multiply(t1, n1, tmp, tmpN, t2);
                 if (getenv("PA30_DEBUG"))
@@ -2088,26 +2277,38 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
                         fprintf(stderr, " (%I64d->%I64d)", t2[q].left, t2[q].right);
                     fprintf(stderr, "\n");
                 }
-                if (getenv("PA30_NOREVERSE"))
+                n2r = rift_reverse(t2, n2, t2r);
+                qsort(t2r, n2r, sizeof(*t2r), rift_cmp);
+                if (getenv("PA30_DEBUG"))
                 {
-                    for (si = 0; si < n2; ++si)
-                    {
-                        t3[si].left = t2[si].left + (__int64)sourceLen;
-                        t3[si].right = t2[si].right;
-                    }
-                    n3 = n2;
+                    unsigned q;
+                    fprintf(stderr, "T2R n=%u:", n2r);
+                    for (q = 0; q < n2r && q < 10; ++q)
+                        fprintf(stderr, " (%I64d->%I64d)", t2r[q].left, t2r[q].right);
+                    fprintf(stderr, "\n");
                 }
-                else
+                sh.left = (__int64)sourceLen;
+                sh.right = 0;
+                n3 = rift_multiply(&sh, 1, t2r, n2r, t3);
+                if (getenv("PA30_DEBUG"))
                 {
-                    n2r = rift_reverse(t2, n2, t2r);
-                    for (si = 0; si < n2r; ++si)
-                    {
-                        t3[si].left = t2r[si].left + (__int64)sourceLen;
-                        t3[si].right = t2r[si].right;
-                    }
-                    n3 = n2r;
+                    unsigned q;
+                    fprintf(stderr, "T3 n=%u:", n3);
+                    for (q = 0; q < n3 && q < 10; ++q)
+                        fprintf(stderr, " (%I64d->%I64d)", t3[q].left, t3[q].right);
+                    fprintf(stderr, "\n");
                 }
-                qsort(t3, n3, sizeof(*t3), rift_cmp);
+                /* The OffsetRiftTable input keeps only left > 0 and drops
+                 * an entry whose rift repeats the previous entry's. */
+                w = 0;
+                for (k = 0; k < n3; ++k)
+                {
+                    if (t3[k].left <= 0) continue;
+                    if (w && (t3[w - 1].right - t3[w - 1].left) ==
+                             (t3[k].right - t3[k].left)) continue;
+                    t3[w++] = t3[k];
+                }
+                n3 = w;
                 if (getenv("PA30_DEBUG"))
                 {
                     unsigned q;
