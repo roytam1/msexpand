@@ -1115,7 +1115,7 @@ static int compo_decompress(BITR *br, const COMPFMT *fmt,
         }
 
 
-        if (getenv("PA30_SYMDBG") && pos < 20000)
+        if (getenv("PA30_SYMDBG") && pos < 100000)
             fprintf(stderr, "SYM pos=%lu val=%lu len=%lu bitpos=%lu\n",
                     pos, sym.value, sym.length, br->bitpos);
         if (sym.length == 1)
