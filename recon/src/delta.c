@@ -799,6 +799,87 @@ static unsigned rift_reverse(const RIFTENTRY *a, unsigned an, RIFTENTRY *out)
     return an;
 }
 
+/* RiftTable::GetRift: return the rift of the entry with the largest
+ * left <= pos, and store that entry's successor left - 1 in *end (or
+ * INT64_MAX for the last entry). */
+static __int64 rift_get_rift(const RIFTENTRY *t, unsigned n, __int64 pos,
+                             __int64 *end)
+{
+    unsigned i;
+    __int64 rift = 0;
+    *end = n ? t[0].left - 1 : INT64_MIN;
+    for (i = 0; i < n && t[i].left <= pos; ++i)
+    {
+        rift = t[i].right - t[i].left;
+        *end = (i + 1 < n) ? t[i + 1].left - 1 : INT64_MAX;
+    }
+    return rift;
+}
+
+/* Port of RiftTable::Multiply's sentinel block (msdelta.dll.c:24042-24086),
+ * which generates the negative-preimage entries using 32-bit half-word
+ * arithmetic. */
+static unsigned rift_multiply_sentinel(const RIFTENTRY *a, unsigned an,
+                                       const RIFTENTRY *b, unsigned bn,
+                                       RIFTENTRY *out, unsigned on)
+{
+    unsigned v7 = (unsigned)(a[0].left >> 32);
+    unsigned v8 = (unsigned)a[0].left;
+    unsigned v9;
+    __int64 v45, lastRift, x, v42, rift;
+    unsigned v11, v12;
+    long v14, pos, v15, v16, v17, v19, v20, v21, v46, v47;
+
+    if (v7 == 0x80000000u && v8 == 0)
+        return on;                       /* first entry already a sentinel */
+    v9 = (v8 == 0);
+    v45 = ((__int64)(v7 - v9) << 32) | (unsigned)(v8 - 1);
+    lastRift = a[an - 1].right - a[an - 1].left;
+    v11 = (unsigned)lastRift;
+    v12 = (unsigned)(lastRift >> 32) + 0x80000000u;
+    x = ((__int64)v12 << 32) | (unsigned)v11;
+    rift = rift_get_rift(b, bn, x, &v42);
+    out[on].left = INT64_MIN;
+    out[on].right = x + rift;
+    ++on;
+    v14 = 0x80000000L;
+    pos = 0;
+    v17 = (long)((unsigned)v42 - v11);
+    v16 = (long)((v42 - x) >> 32);
+    v15 = v17;
+    if ((unsigned __int64)(v45 + INT64_MIN) >
+        (unsigned __int64)(((__int64)v16 << 32) | (unsigned)v17))
+    {
+        do
+        {
+            for (;;)
+            {
+                v19 = (long)(((((__int64)v16 << 32) | (unsigned __int64)v15) + 1 +
+                              (((__int64)v14 << 32) | (unsigned __int64)pos)) >> 32);
+                pos = (long)((__int64)pos + v15 + 1);
+                v47 = v19;
+                v20 = (long)v42 + 1;
+                v21 = (long)rift_get_rift(b, bn, (__int64)v42 + 1, &v42);
+                out[on].left = ((__int64)v47 << 32) | (unsigned long)pos;
+                out[on].right = (__int64)v20 + v21;
+                ++on;
+                v14 = v47;
+                v46 = (long)(((unsigned __int64)(v42 - v20)) >> 32);
+                v15 = (long)(v42 - v20);
+                if ((long)(((__int64)(v45 - (((__int64)v47 << 32) |
+                                  (unsigned long)pos))) >> 32) <= v46)
+                    break;
+                v16 = v46;
+            }
+            if ((long)(((__int64)(v45 - (((__int64)v47 << 32) |
+                              (unsigned long)pos))) >> 32) < v46)
+                break;
+            v16 = v46;
+        } while ((long)v45 - (unsigned long)pos > v15);
+    }
+    return on;
+}
+
 /* Compose two RiftTables: result(x) = b(a(x)).  Breakpoints are the union of
  * A's lefts and the preimages of B's lefts through A. */
 static unsigned rift_multiply(const RIFTENTRY *a, unsigned an,
@@ -812,6 +893,8 @@ static unsigned rift_multiply(const RIFTENTRY *a, unsigned an,
     out[on].left = INT64_MIN;
     out[on].right = rift_map(b, bn, rift_map(a, an, INT64_MIN));
     ++on;
+    if (getenv("PA30_SENTINEL"))
+        on = rift_multiply_sentinel(a, an, b, bn, out, on);
     for (i = 0; i < an; ++i)
     {
         out[on].left = a[i].left;

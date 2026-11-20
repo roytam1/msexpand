@@ -1234,3 +1234,16 @@ Phase D is the genuine open-ended piece.
     returned to 5858/86120.  A faithful port must reproduce the 32-bit
     half-word arithmetic of the decompiled sentinel block
     (`msdelta.dll.c:24042-24086`), which is the remaining work.
+
+    **Sentinel block ported (part 40).**  `rift_multiply_sentinel()` now
+    faithfully implements the decompiled 32-bit half-word branch: GetRift at
+    `INT64_MIN + lastRift(A)`, the sentinel `Add`, and the nested loop that
+    advances `pos` by `v15+1` and forms `(v47<<32)|pos` entries.  Enabled via
+    PA30_SENTINEL.  Result: ORIFT grows 91 -> 93 entries, but the critical
+    `(153856, -158344)` is **still missing** (missing count stays 15), and
+    decode fails outright with it enabled.  Tracing showed that entry comes
+    from `t2[81] = (104312,-158344)` produced by the Multiply **main loop**
+    (`msdelta.dll.c:24088-24151`, caller 0x2F1C0), not the sentinel block.
+    A faithful port must replace our simplified `rift_multiply` wholesale
+    with the decompiled main-loop arithmetic — the sentinel alone is not
+    sufficient.  Default remains 5858/307200 wrong with all regressions green.
