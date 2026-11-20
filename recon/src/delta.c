@@ -1190,6 +1190,9 @@ static int compo_decompress(BITR *br, const COMPFMT *fmt,
             {
                 unsigned long j;
                 long sp = cpos + riftOff;
+                if (getenv("PA30_SYMDBG") && pos == 262695)
+                    fprintf(stderr, "RIFT262695 cpos=%ld off=%ld sp=%ld len=%lu\n",
+                            cpos, riftOff, sp, len);
                 if (getenv("PA30_SYMDBG") && pos == 1026)
                     fprintf(stderr, "RIFT1026 cpos=%ld off=%ld sp=%ld len=%lu\n",
                             cpos, riftOff, sp, len);
@@ -1967,7 +1970,7 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
                 {
                     unsigned q;
                     fprintf(stderr, "ORIFT n=%u\n", n3);
-                    for (q = 0; q < n3 && q < 12; ++q)
+                    for (q = 0; q < n3 && q < 200; ++q)
                         fprintf(stderr, "  or[%u] %I64d -> %I64d\n",
                                 q, t3[q].left, t3[q].right);
                 }
@@ -2066,6 +2069,22 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
                                     sizeOfImage, sizeOfHeaders);
                             else
                                 pa30_rewrite_imports(prepared, sourceLen, rt, rn);
+                        }
+                    }
+                    /* Verification hook: use the DLL's dumped transformed
+                     * seed instead of our computed one. */
+                    if (getenv("PA30_SEEDFILE"))
+                    {
+                        FILE *sf = fopen(getenv("PA30_SEEDFILE"), "rb");
+                        if (sf)
+                        {
+                            if (fread(prepared, 1, (size_t)sourceLen, sf) ==
+                                (size_t)sourceLen)
+                            {
+                                if (getenv("PA30_DEBUG")) fprintf(stderr,
+                                    "using external seed\n");
+                            }
+                            fclose(sf);
                         }
                     }
                     decompressSrc = prepared;

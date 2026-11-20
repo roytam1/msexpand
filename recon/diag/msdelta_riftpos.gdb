@@ -20,7 +20,7 @@ class RiftPos(gdb.Breakpoint):
         pos = int(gdb.parse_and_eval("$esi"))
         src = int(gdb.parse_and_eval("*(unsigned long*)($esp)"))
         g["n"] += 1
-        if lo <= pos <= hi and g["n"] < 4000:
+        if lo <= pos <= hi and g["n"] < 100000:
             gdb.write("RIFTPOS combined=%d out=%d src=%d delta=%d\n" %
                       (pos, pos - 49544, src, src - pos))
         return False

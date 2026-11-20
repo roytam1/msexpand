@@ -1197,3 +1197,25 @@ Phase D is the genuine open-ended piece.
     over-rewrite in .text) and the remaining decode divergence at output 83630
     is a repeat-match (0x54002) whose history distance differs from the DLL's.
     Blob 0, generated vectors, PA19, XPRESS, LZX and LZMS stay byte-exact.
+
+    **Two remaining gaps isolated (part 38).**  Added `PA30_SEEDFILE` to feed
+    the DLL's dumped transformed seed into our decoder.  With the exact seed
+    blob 1 improves to **4203/307200 wrong, first divergence 262695** (vs
+    5858/86120 with our computed seed).  This cleanly separates two bugs:
+
+    1. **Seed transform** (~1655 bytes of error): our `TransformInferredRelocations`
+       over-rewrites instruction immediates (e.g. file 0x5CAC `B8 03 40 00`)
+       that the DLL's hint map excludes.  `CreateHintBuffer` only allocates a
+       zero buffer; earlier transform stages populate it, which we do not port.
+    2. **ORIFT composition** (~4203 bytes of error): at combined position
+       312239 (output 262695) the DLL uses offset -312200 from table entry
+       `(153856, -158344)`, while our composed table has no such entry and
+       falls back to -123648.  `msdelta_multiply.gdb` showed the DLL's t1 has
+       negative-preimage entries `(-15872,0),(-11744,4176),(-3392,86584),...`
+       that our `rift_multiply` sentinel handling does not generate, so the
+       reverse/shift pipeline omits that interval.
+
+    Both need faithful ports of DLL internals (`RiftTable::Multiply` sentinel
+    handling and the hint-populating transform stages), not decoder changes.
+    The decoder matches the DLL symbol-for-symbol wherever the seed and ORIFT
+    are correct.
