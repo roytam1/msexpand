@@ -1288,3 +1288,16 @@ Phase D is the genuine open-ended piece.
     right values are A-derived lefts minus a running 64-bit offset — the
     exact offset source is the last untraced piece.  Default stays
     5858/307200 with all regressions green.
+
+    **Offset source traced (part 44).**  The Add site at 0x2F15F belongs to
+    `RiftTable::Reverse` (`0x1002EE6C`), not Multiply.  `msdelta_revadd.gdb`
+    logged the Add arguments directly: e.g. `left=1056, right=-264672`,
+    `left=9456, right=-253200`.  The decompiled `Reverse` shows the rule at
+    `msdelta.dll.c:23840`: `Add(out, *entry, *entry - rift)` where `rift` comes
+    from `v19 = A[j].right - A[j].left` (line 23754) — i.e. the running offset
+    is the **rift of an A (t1) entry**, with the largest value 265728 present
+    in t1's last real entry `(37376,303104)`.  So Reverse emits negative-right
+    entries `(left, left - rift)` on top of the swapped map, which our
+    `rift_reverse()` (plain left/right swap) does not produce.  The precise
+    selection of which entries get this treatment is the remaining piece;
+    default stays 5858/307200 with all regressions green.
