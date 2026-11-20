@@ -157,6 +157,7 @@ int CixApplyCab(const char *cabPath, const char *outDir)
                 continue;
 
             JoinPath(target, sizeof(target), outDir, f->name);
+            if (getenv("PA30_DEBUG")) fprintf(stderr, "CIX target: %s\n", f->name);
             EnsureParentDir(target);
 
             if (IsDelta(f, "RAW"))

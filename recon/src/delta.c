@@ -1557,7 +1557,8 @@ static void pa30_transform_relcalls(unsigned char *buf, unsigned long len,
             if (targetRVA < 0 || (unsigned long)targetRVA >= sizeOfImage)
                 continue;
             to = pa30_rva_off(buf, len, (unsigned long)targetRVA);
-            if (to == 0xFFFFFFFFUL || (hint && (hint[to] & 0x01))) continue;
+            if (to == 0xFFFFFFFFUL || to >= len ||
+                (hint && (hint[to] & 0x01))) continue;
             mappedSite = (long)pa30_map_rva(rt, rn, (unsigned long)siteRVA);
             mappedTarget = (long)pa30_map_rva(rt, rn,
                                               (unsigned long)targetRVA);
@@ -1680,7 +1681,8 @@ static void pa30_transform_reljmps(unsigned char *buf, unsigned long len,
             if (targetRVA < 0 || (unsigned long)targetRVA >= sizeOfImage)
                 continue;
             to = pa30_rva_off(buf, len, (unsigned long)targetRVA);
-            if (to == 0xFFFFFFFFUL || (hint && (hint[to] & 0x01))) continue;
+            if (to == 0xFFFFFFFFUL || to >= len ||
+                (hint && (hint[to] & 0x01))) continue;
             mappedSite = (long)pa30_map_rva(rt, rn, (unsigned long)siteRVA);
             mappedTarget = (long)pa30_map_rva(rt, rn,
                                               (unsigned long)targetRVA);
@@ -1780,6 +1782,27 @@ static void pa30_transform_relocs(unsigned char *buf, unsigned long len,
     off = pa30_rva_off(buf, len, rrva);
     if (off == 0xFFFFFFFFUL || off + rsize > len) return;
     end = off + rsize;
+    /* The rebuild may extend past the directory size into the section's
+     * raw padding; the DLL bounds it by the section, not the directory. */
+    {
+        unsigned long nsec = rd16(buf + pe + 6);
+        unsigned long sh = opt + rd16(buf + pe + 20);
+        unsigned long s;
+        for (s = 0; s < nsec && sh + 40 * s + 40 <= len; ++s)
+        {
+            unsigned long o = sh + 40 * s;
+            unsigned long va = rd32(buf + o + 12);
+            unsigned long vs = rd32(buf + o + 8);
+            unsigned long raw = rd32(buf + o + 20);
+            unsigned long secEnd = raw + rd32(buf + o + 16);
+            if (rrva >= va && rrva < va + vs)
+            {
+                if (secEnd > len) secEnd = len;
+                if (secEnd > end) end = secEnd;
+                break;
+            }
+        }
+    }
 
     /* Count entries first: large PEs can have tens of thousands of them. */
     {
@@ -2924,27 +2947,36 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
                                     }
                                 }
                             }
+                            if (getenv("PA30_DEBUG")) fprintf(stderr, "SEED pointers\n");
                             pa30_transform_pointers(prepared, sourceLen, rt, rn,
                                 oldBase, (unsigned long)peImageBase,
                                 sizeOfImage, sizeOfHeaders, hintBuf);
+                            if (getenv("PA30_DEBUG")) fprintf(stderr, "SEED relocs\n");
                             pa30_transform_relocs(prepared, sourceLen, rt, rn,
                                 oldBase, (unsigned long)peImageBase,
                                 sizeOfImage);
+                            if (getenv("PA30_DEBUG")) fprintf(stderr, "SEED resources\n");
                             pa30_transform_resources(prepared, sourceLen,
                                                      rt, rn);
+                            if (getenv("PA30_DEBUG")) fprintf(stderr, "SEED markimports\n");
                             pa30_mark_import_section(prepared, sourceLen);
+                            if (getenv("PA30_DEBUG")) fprintf(stderr, "SEED imports\n");
                             if (getenv("PA30_BLIND"))
                                 pa30_transform_rvas(prepared, sourceLen, rt, rn,
                                     sizeOfImage, sizeOfHeaders);
                             else
                                 pa30_rewrite_imports(prepared, sourceLen,
                                                      rt, rn);
+                            if (getenv("PA30_DEBUG")) fprintf(stderr, "SEED relcalls\n");
                             pa30_transform_relcalls(prepared, sourceLen, rt,
                                                     rn, hintBuf, sizeOfImage);
+                            if (getenv("PA30_DEBUG")) fprintf(stderr, "SEED reljmps\n");
                             pa30_transform_reljmps(prepared, sourceLen, rt,
                                                    rn, hintBuf, sizeOfImage);
+                            if (getenv("PA30_DEBUG")) fprintf(stderr, "SEED exports\n");
                             pa30_transform_exports(prepared, sourceLen,
                                                    rt, rn);
+                            if (getenv("PA30_DEBUG")) fprintf(stderr, "SEED done\n");
                             free(hintBuf);
                         }
                     }
