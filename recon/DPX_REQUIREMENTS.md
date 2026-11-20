@@ -1082,3 +1082,28 @@ Phase D is the genuine open-ended piece.
     fields (relocations / relative branches) at output offsets >= 298, plus
     one out-of-range RIFT match at 83512.  Blob 0, generated vectors, PA19,
     XPRESS, LZX and LZMS all remain byte-exact.
+
+    **Seed-transform trace (part 32).**  `msdelta_sym.gdb` shows the DLL's
+    symbol stream is byte-for-byte identical to ours at matching combined
+    positions (e.g. output 255: a 16-byte 0x54000 rift match; output 1026:
+    another rift match), so the remaining divergence is entirely the
+    transformed seed bytes.  Reconstructed transformed source from the DLL's
+    output at identity-rift regions:
+
+      - file 0x100 (COFF TimeDateStamp): 0x5344BCA1 (pre-blob target TS),
+      - file 0x12C (PE32 ImageBase): 0x10000000 (pre-blob target base),
+      - file 0x400..0x43F (start of .text, RVA 0x1000): a jump table of
+        absolute addresses rewritten from old-base 0x00408xxx to new-base
+        0x10015xxx, e.g. 0x0040809B -> 0x10017348, 0x004078ED ->
+        0x100152ED.  The new RVAs (0x15xxx) are not a constant rebase or a
+        simple RIFT displacement of the old RVAs (0x8xxx), so this is a
+        semantic rewrite (import/export or relative-branch canonicalisation)
+        driven by the pre-blob RVA map and the delta flags (0x6621FF).
+
+    Calling the PA19 `PeFixPrepareSeed` with the pre-blob RVA map changes
+    only part of a table word (0x80 -> 0x40 at file 0x401) and is not the
+    PA30 transform.  Implementing the remaining rewrite needs a dedicated
+    port of the DLL's `TransformCoffImage` variant for PA30.  `msdelta_src.gdb`
+    is kept as the seed-buffer trace starting point (GetChars is only called
+    at buffer boundaries, so it needs a different hook to dump every seed
+    byte).  No further source change this round.
