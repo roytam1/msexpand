@@ -1248,7 +1248,34 @@ static void pa30_reloc_mask(const unsigned char *buf, unsigned long len,
                     break;
                 }
             }
+    /* RiftTransformImports marks the import section as handled too: the
+     * DLL's hint map has bit 0x01 set over .idata, which makes the
+     * relative-call/jump scans skip rewrite targets there. */
+    {
+        unsigned long ir = rd32(buf + opt + 0x60 + 8);
+        unsigned long nsec = rd16(buf + pe + 6);
+        unsigned long sh = opt + rd16(buf + pe + 20);
+        unsigned long s, k;
+        if (ir)
+            for (s = 0; s < nsec && sh + 40 * s + 40 <= len; ++s)
+            {
+                unsigned long o = sh + 40 * s;
+                unsigned long va = rd32(buf + o + 12);
+                unsigned long vs = rd32(buf + o + 8);
+                unsigned long raw = rd32(buf + o + 20);
+                unsigned long rs = rd32(buf + o + 16);
+                if (ir >= va && ir < va + vs)
+                {
+                    unsigned long n = rs;
+                    if (n > len - raw) n = len - raw;
+                    if (raw < len)
+                        for (k = 0; k < n; ++k)
+                            mask[raw + k] |= 0x03U;
+                    break;
+                }
+            }
     }
+}
 }
 
 /* Mirrors the DLL's RiftTransformRelocationsI386Component::
@@ -1545,10 +1572,10 @@ static void pa30_transform_relcalls(unsigned char *buf, unsigned long len,
             long rel, newrel, siteRVA, targetRVA, mappedSite, mappedTarget;
             unsigned long to;
             if (buf[p] != 0xE8) continue;
-            /* Skip an opcode byte that is really a ModRM disp8
-             * (mod=01, rm=101), e.g. 8B/8D 45|55 E8. */
             if (p >= raw + 2 && (buf[p - 1] & 0xC7) == 0x45 &&
-                (buf[p - 2] & 0xC0) != 0xC0)
+                (buf[p - 2] & 0xC0) != 0xC0 && p + 1 < span &&
+                buf[p + 1] != 0xE8 && buf[p + 1] != 0xE9 &&
+                buf[p + 1] != 0x0F)
                 continue;
             if (hint && (hint[p] | hint[p + 1] | hint[p + 2] |
                          hint[p + 3] | hint[p + 4]) & 0x01)
@@ -1660,11 +1687,10 @@ static void pa30_transform_reljmps(unsigned char *buf, unsigned long len,
         {
             long rel, newrel, siteRVA, targetRVA, mappedSite, mappedTarget;
             unsigned long to, opLen = 5, hintAt = p;
-            /* Skip bytes that are really a ModRM disp8 (mod=01, rm=101);
-             * the byte scan otherwise mistakes the displacement for an
-             * opcode. */
             if (p >= raw + 2 && (buf[p - 1] & 0xC7) == 0x45 &&
-                (buf[p - 2] & 0xC0) != 0xC0)
+                (buf[p - 2] & 0xC0) != 0xC0 && p + 1 < span &&
+                buf[p + 1] != 0xE8 && buf[p + 1] != 0xE9 &&
+                buf[p + 1] != 0x0F)
                 continue;
             if (buf[p] == 0x0F && p + 6 <= span &&
                 (buf[p + 1] & 0xF0) == 0x80)

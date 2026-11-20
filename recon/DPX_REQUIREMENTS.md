@@ -1450,3 +1450,15 @@ Phase D is the genuine open-ended piece.
     Verification: the full KB2959977 MSU now extracts **513/513** byte-exact
     targets with `PA30_NO_OS=1` ¡X identical to OS delegation.  blob 0/1,
     d0/d1, PA19, XPRESS, LZX and LZMS remain byte-exact.
+
+    **KB5131083 hint-map follow-up (part 51).**  The DLL's hint map marks the
+    whole import section (and resource section) as handled; we now set the
+    handled bit over .idata too.  The ModRM-disp8 guard was narrowed to
+    apply only when the following byte is not itself a call/jump opcode:
+    the DLL relies on hint bits rather than opcode guards, and the broad
+    guard was skipping real rewrite sites.
+
+    Result: KB2959977 stays 513/513, KB5131083 improves from 201 to
+    **203/209** byte-exact targets with no crash.  Six targets remain wrong;
+    their seeds differ at a few relative-operand positions where the DLL's
+    hint bits come from stages we still haven't identified.
