@@ -23,6 +23,8 @@ class Init(gdb.Breakpoint):
         gdb.write("INIT this=%08x tbl=%08x cnt=%lu\n" % (this, tbl, cnt))
         inf = gdb.selected_inferior()
         arr = int(gdb.parse_and_eval("*(unsigned long*)(%d+20)" % tbl))
+        with open("C:/Users/Roy/AppData/Local/Temp/opencode/pa30harness/orift_table.bin", "wb") as fh:
+            fh.write(bytes(inf.read_memory(arr, 16*cnt)))
         for i in range(min(cnt, 100)):
             d = bytes(inf.read_memory(arr + 16*i, 16))
             a = int.from_bytes(d[:8], "little", signed=True)
