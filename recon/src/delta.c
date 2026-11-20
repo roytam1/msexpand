@@ -2088,13 +2088,25 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
                         fprintf(stderr, " (%I64d->%I64d)", t2[q].left, t2[q].right);
                     fprintf(stderr, "\n");
                 }
-                n2r = rift_reverse(t2, n2, t2r);
-                for (si = 0; si < n2r; ++si)
+                if (getenv("PA30_NOREVERSE"))
                 {
-                    t3[si].left = t2r[si].left + (__int64)sourceLen;
-                    t3[si].right = t2r[si].right;
+                    for (si = 0; si < n2; ++si)
+                    {
+                        t3[si].left = t2[si].left + (__int64)sourceLen;
+                        t3[si].right = t2[si].right;
+                    }
+                    n3 = n2;
                 }
-                n3 = n2r;
+                else
+                {
+                    n2r = rift_reverse(t2, n2, t2r);
+                    for (si = 0; si < n2r; ++si)
+                    {
+                        t3[si].left = t2r[si].left + (__int64)sourceLen;
+                        t3[si].right = t2r[si].right;
+                    }
+                    n3 = n2r;
+                }
                 qsort(t3, n3, sizeof(*t3), rift_cmp);
                 if (getenv("PA30_DEBUG"))
                 {

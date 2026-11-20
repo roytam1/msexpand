@@ -1261,3 +1261,15 @@ Phase D is the genuine open-ended piece.
     debugger-driven line-by-line semantic reconstruction of the Multiply
     loop, or a from-scratch derivation of its interval-extension rule from
     the dumped intermediate tables (`msdelta_mulout.gdb`).
+
+    **ORIFT = t2 shifted, no reverse (part 42).**  Comparing the DLL's dumped
+    t2 (`mulout6.bin`) with its final ORIFT (`orift_table.bin`) entry by entry
+    shows the final table is simply t2's left values + srcLen (no reverse):
+    t2 (1056,-264672) -> ORIFT (50600,-264672), (1104,1056) -> (50648,1056),
+    (9456,-253200) -> (59000,-253200), (83512,9408) -> (133056,9408),
+    (104312,-158344) -> (153856,-158344).  Added a PA30_NOREVERSE switch to
+    skip our `rift_reverse`; it produced 91 entries with 76 still missing,
+    confirming the gap is in t2 itself: our simplified Multiply omits t2's
+    negative-right entries (1056,-264672), (9456,-253200), (104312,-158344),
+    which the DLL's main loop generates.  Default path unchanged at
+    5858/307200; all regressions green.
