@@ -1301,3 +1301,18 @@ Phase D is the genuine open-ended piece.
     `rift_reverse()` (plain left/right swap) does not produce.  The precise
     selection of which entries get this treatment is the remaining piece;
     default stays 5858/307200 with all regressions green.
+
+    **Selection rule derived (part 45).**  `msdelta_revsel.gdb` logged all six
+    extra adds in this delta: `(left, right, offset)` =
+    `(279034,32732,246302)`, `(278768,33562,245206)`,
+    `(279348,34334,245014)`, `(279708,34428,245280)`,
+    `(1056,-264672,265728)`, `(9456,-253200,262656)` — each satisfies
+    `right = left - offset` with offset = a per-entry rift.  The decompiled
+    `Reverse` shows the selection via two binary searches over its temp array:
+    `v22` = first index with `left >= key` (key = a2 + rift, a2=0 so key=rft),
+    `v63` = first index with `left > key2`; then for every entry in
+    `[v22+1, v63-1]` it emits `(entry.left, entry.left - rift)`
+    (`msdelta.dll.c:23838-23844`).  So an entry gets an extra negative-right
+    add exactly when its `left` falls strictly inside a rift interval being
+    reversed.  Implementing this range-selection in `rift_reverse()` is the
+    last step; default stays 5858/307200 with all regressions green.
