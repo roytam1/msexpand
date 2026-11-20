@@ -518,6 +518,7 @@ static int cl_read(unsigned char *lens, BITR *br, const HUFF *meta,
 typedef struct tagCOMPFMT
 {
     unsigned nSeg;
+    unsigned defaultFormat;
     unsigned boundary[32];
     unsigned char metaLen[39];
     unsigned char lens[32][872];
@@ -535,6 +536,7 @@ static int compfmt_read(COMPFMT *f, BITR *br)
     {
         f->nSeg = 1;
         f->boundary[0] = 0;
+        f->defaultFormat = 1;
         return 0;                   /* default format */
     }
     f->nSeg = br_read_int(br);
@@ -1542,6 +1544,10 @@ static void pa30_transform_relcalls(unsigned char *buf, unsigned long len,
             long rel, newrel, siteRVA, targetRVA, mappedSite, mappedTarget;
             unsigned long to;
             if (buf[p] != 0xE8) continue;
+            /* Skip a 0xE8 that is actually the disp8 of 8B/8D 45 xx. */
+            if (p >= raw + 2 && (buf[p - 2] == 0x8B || buf[p - 2] == 0x8D) &&
+                buf[p - 1] == 0x45)
+                continue;
             if (hint && (hint[p] | hint[p + 1] | hint[p + 2] |
                          hint[p + 3] | hint[p + 4]) & 0x01)
                 continue;
@@ -1651,6 +1657,12 @@ static void pa30_transform_reljmps(unsigned char *buf, unsigned long len,
         {
             long rel, newrel, siteRVA, targetRVA, mappedSite, mappedTarget;
             unsigned long to, opLen = 5, hintAt = p;
+            /* Skip bytes that are really a ModRM disp8 of a [EBP+disp8]
+             * instruction (8B/8D 45 xx); the byte scan otherwise mistakes
+             * the displacement 0xE8/0xE9 for an opcode. */
+            if (p >= raw + 2 && (buf[p - 2] == 0x8B || buf[p - 2] == 0x8D) &&
+                buf[p - 1] == 0x45)
+                continue;
             if (buf[p] == 0x0F && p + 6 <= span &&
                 (buf[p + 1] & 0xF0) == 0x80)
             {
@@ -1716,8 +1728,17 @@ static void pa30_res_walk(unsigned char *buf, unsigned long base,
         }
         else if (target < rsize)
         {
-            /* Resource data entries are re-laid-out by the target-side
-             * resource builder; leave their OffsetToData alone here. */
+            unsigned long de = base + target;
+            if (de + 4 <= base + rsize)
+            {
+                unsigned long v = rd32(buf + de);
+                /* RiftTransformResourceRecursive maps data-entry OffsetToData
+                 * by MapRva(resourceBase + offset) - MapRva(resourceBase). */
+                unsigned long nr = (unsigned long)pa30_map_rva(rt, rn,
+                                                (long)(rrva + v));
+                pa30_set_u32(buf, de,
+                             nr >= mbase ? nr - mbase : 0);
+            }
         }
     }
 }
@@ -1895,6 +1916,13 @@ static int compo_decompress(BITR *br, const COMPFMT *fmt,
             ++segIndex;
         if ((int)segIndex != currentSeg)
         {
+            if (fmt->defaultFormat)
+            {
+                make_fixed_lengths(lens, 600);
+                make_fixed_lengths(lens + 600, 256);
+                make_fixed_lengths(lens + 856, 16);
+            }
+            else
             {
                 memcpy(lens, fmt->lens[segIndex], sizeof(lens));
             }

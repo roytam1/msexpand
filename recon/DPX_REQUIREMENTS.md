@@ -1432,3 +1432,21 @@ Phase D is the genuine open-ended piece.
     positions than our reloc-only mask, so a few false E8 ModRM bytes and
     MOV immediates are still rewritten.  OS delegation remains the default
     and is still 513/513.
+
+    **Native MSU parity achieved (part 50).**  The last seed gaps were:
+
+      - resource-data OffsetToData fields use the same rule as directory
+        offsets: `MapRva(resourceBase + offset) - MapRva(resourceBase)`
+        (`msdelta.dll.c:38418-38422`).  The used rift table still contains
+        the needed rifts, so no unpruned table is required.
+      - a COMPFMT with the "default format" bit must keep the fixed Huffman
+        lengths even when nSeg=1; we now track `defaultFormat` explicitly
+        instead of inferring it from the segment count.  This unblocked the
+        chained MUI deltas that decoded to garbage.
+      - the byte scans for E8/E9/0F8x must skip a 0xE8/0xE9 that is really
+        the disp8 of `8B/8D 45 xx`; otherwise a few false calls inside
+        ModRM bytes rewrite neighbouring data.
+
+    Verification: the full KB2959977 MSU now extracts **513/513** byte-exact
+    targets with `PA30_NO_OS=1` ¡X identical to OS delegation.  blob 0/1,
+    d0/d1, PA19, XPRESS, LZX and LZMS remain byte-exact.
