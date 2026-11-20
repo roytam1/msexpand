@@ -10,6 +10,7 @@ import gdb, os
 base = int(gdb.parse_and_eval("$pc")) - 0x1A5A0
 lo = int(os.environ.get("SYM_LO", "0"))
 hi = int(os.environ.get("SYM_HI", "100000"))
+srclen = int(os.environ.get("SRCLEN", "49544"))
 g = {"n": 0}
 
 class Sym(gdb.Breakpoint):
@@ -17,7 +18,7 @@ class Sym(gdb.Breakpoint):
         super(Sym, self).__init__("*%#x" % addr, internal=False,
                                   type=gdb.BP_HARDWARE_BREAKPOINT)
     def stop(self):
-        pos = int(gdb.parse_and_eval("$esi")) - 49544
+        pos = int(gdb.parse_and_eval("$esi")) - srclen
         ln = int(gdb.parse_and_eval("$eax"))
         val = int(gdb.parse_and_eval("*(unsigned long*)($ebp-0x84)"))
         g["n"] += 1

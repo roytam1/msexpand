@@ -1405,3 +1405,30 @@ Phase D is the genuine open-ended piece.
     byte-exact does **not** generalise to every delta in this MSU: there are
     further format variants in the native decoder.  Keep OS delegation as
     the default for MSU extraction.
+
+    **Native MSU work, part 49 (in progress).**  Debugged the failing deltas
+    from KB2959977.  Fixes applied to the native seed transform and decoder:
+
+      - reloc entries are now collected into a dynamically sized array (this
+        PE has 6690, the old cap was 4096), and type-3 VA fields are rebased
+        explicitly like `ReadRelocationEntries` does instead of relying on
+        the inferred scan;
+      - relative CALL (E8), near JMP (E9) and 0F 8x conditional jump targets
+        are mapped through the RiftTable (`RiftTransformRelativeCalls/
+        JmpsI386`);
+      - export-directory RVAs (Name, AddressOfFunctions/Names and their
+        entries) are mapped;
+      - resource directories are walked recursively; Unicode Name offsets
+        and subdirectory offsets are remapped by
+        `MapRva(base+off) - MapRva(base)`;
+      - **nSeg=1 deltas use the explicit CompressionLengths**, not the fixed
+        default code.  This was why the small MUI deltas failed at pos 112.
+
+    Results: blob 1 and blob 0 stay byte-exact; `wucltux.dll` and
+    `wuaueng.dll` went from 4488 / 535 wrong bytes to 0 / 4.  Full native
+    MSU extraction improved from **334 to 362 / 513** byte-exact targets
+    (7 bad, 144 missing).  The remaining failures cascade from a few bases
+    that are still a handful of bytes off: the DLL's hint map marks more
+    positions than our reloc-only mask, so a few false E8 ModRM bytes and
+    MOV immediates are still rewritten.  OS delegation remains the default
+    and is still 513/513.

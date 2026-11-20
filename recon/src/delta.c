@@ -1199,21 +1199,21 @@ static void pa30_reloc_mask(const unsigned char *buf, unsigned long len,
     {
         unsigned long page = rd32(buf + off);
         unsigned long bsize = rd32(buf + off + 4);
-        unsigned long e, fo;
+        unsigned long e;
         if (bsize < 8 || bsize > end - off) break;
         for (e = 8; e + 2 <= bsize; e += 2)
         {
             unsigned long entry = rd16(buf + off + e);
             unsigned long type = entry >> 12;
             unsigned long roff = entry & 0xFFF;
-            if (type == 3 || type == 10)
+            if (type == 3 || type == 10 || type == 1 || type == 2 || type == 4)
             {
-                fo = pa30_rva_off(buf, len, page + roff);
-                if (fo != 0xFFFFFFFFUL && fo + 4 <= len)
-                {
-                    unsigned k;
-                    for (k = 0; k < 4; ++k) mask[fo + k] &= ~0x02U;
-                }
+                unsigned long fo = pa30_rva_off(buf, len, page + roff);
+                unsigned long k, width = (type == 3) ? 4 :
+                                         (type == 10) ? 8 : 2;
+                if (fo != 0xFFFFFFFFUL && fo + width <= len)
+                    for (k = 0; k < width; ++k)
+                        mask[fo + k] |= 0x03U;   /* handled + skip in scan */
             }
             if (type == 4) ++e;
         }
@@ -1481,10 +1481,224 @@ static int cmp_reloc(const void *x, const void *y)
 /* RiftTransformResource: resource-directory OffsetToData fields (high bit
  * set) are relative to the resource section RVA and must be rebased through
  * the same RiftTable; only the low 12 bits of the mapped RVA are kept. */
+/* RiftTransformRelativeCallsI386: rewrite the rel32 of E8 CALL instructions
+ * to the mapped target RVA (msdelta.dll.c:36936-37055).  Instructions whose
+ * bytes are already hinted (relocation sites) are left alone. */
+static void pa30_transform_relcalls(unsigned char *buf, unsigned long len,
+                                    const RIFTENTRY *rt, unsigned rn,
+                                    const unsigned char *hint,
+                                    unsigned long sizeOfImage)
+{
+    unsigned long pe, opt, sh, nsec, s;
+    if (len < 0x40) return;
+    pe = rd32(buf + 0x3C);
+    if (pe + 24 > len || memcmp(buf + pe, "PE\0\0", 4)) return;
+    opt = pe + 24;
+    if (rd16(buf + opt) != 0x10B) return;
+    nsec = rd16(buf + pe + 6);
+    sh = opt + rd16(buf + pe + 20);
+    for (s = 0; s < nsec && sh + 40 * s + 40 <= len; ++s)
+    {
+        unsigned long o = sh + 40 * s;
+        unsigned long flags = rd32(buf + o + 36);
+        unsigned long vs = rd32(buf + o + 8);
+        unsigned long rs = rd32(buf + o + 16);
+        unsigned long raw = rd32(buf + o + 20);
+        unsigned long va = rd32(buf + o + 12);
+        unsigned long span, p;
+        if (!(flags & 0x20000000UL)) continue;
+        if (vs > rs) vs = rs;
+        if (vs < 5 || raw + vs > len) continue;
+        span = raw + vs;
+        for (p = raw; p + 5 <= span; ++p)
+        {
+            long rel, newrel, siteRVA, targetRVA, mappedSite, mappedTarget;
+            unsigned long to;
+            if (buf[p] != 0xE8) continue;
+            if (hint && (hint[p] | hint[p + 1] | hint[p + 2] |
+                         hint[p + 3] | hint[p + 4]) & 0x01)
+                continue;
+            rel = (long)rd32(buf + p + 1);
+            siteRVA = (long)(va + (p - raw) + 5);
+            targetRVA = siteRVA + rel;
+            if (targetRVA < 0 || (unsigned long)targetRVA >= sizeOfImage)
+                continue;
+            to = pa30_rva_off(buf, len, (unsigned long)targetRVA);
+            if (to == 0xFFFFFFFFUL || (hint && (hint[to] & 0x01))) continue;
+            mappedSite = (long)pa30_map_rva(rt, rn, (unsigned long)siteRVA);
+            mappedTarget = (long)pa30_map_rva(rt, rn,
+                                              (unsigned long)targetRVA);
+            newrel = mappedTarget - mappedSite;
+            if (newrel != rel)
+                pa30_set_u32(buf, p + 1, (unsigned long)newrel);
+            p += 4;
+        }
+    }
+}
+
+/* RiftTransformExports: map the RVAs in IMAGE_EXPORT_DIRECTORY (Name,
+ * AddressOfFunctions/AddressOfNames table pointers and their entries). */
+static void pa30_transform_exports(unsigned char *buf, unsigned long len,
+                                   const RIFTENTRY *rt, unsigned rn)
+{
+    unsigned long pe, opt, er, es, off, i;
+    if (len < 0x40) return;
+    pe = rd32(buf + 0x3C);
+    if (pe + 24 > len || memcmp(buf + pe, "PE\0\0", 4)) return;
+    opt = pe + 24;
+    if (rd16(buf + opt) != 0x10B || opt + 0x90 > len) return;
+    er = rd32(buf + opt + 0x60);
+    es = rd32(buf + opt + 0x60 + 4);
+    if (!er || es < 40) return;
+    off = pa30_rva_off(buf, len, er);
+    if (off == 0xFFFFFFFFUL || off + 40 > len) return;
+    {
+        unsigned long nf = rd32(buf + off + 20);
+        unsigned long nn = rd32(buf + off + 24);
+        unsigned long af = rd32(buf + off + 28);
+        unsigned long an = rd32(buf + off + 32);
+        unsigned long fo, no;
+        for (i = 0; i < 40; i += 4)
+        {
+            unsigned long v = rd32(buf + off + i);
+            if (!v || (i != 12 && i != 28 && i != 32 && i != 36)) continue;
+            pa30_set_u32(buf, off + i,
+                         (unsigned long)pa30_map_rva(rt, rn, (long)v));
+        }
+        if (nf && af)
+        {
+            fo = pa30_rva_off(buf, len, af);
+            for (i = 0; i < nf && fo != 0xFFFFFFFFUL &&
+                        fo + 4 * (i + 1) <= len; ++i)
+            {
+                unsigned long v = rd32(buf + fo + 4 * i);
+                if (v)
+                    pa30_set_u32(buf, fo + 4 * i,
+                                 (unsigned long)pa30_map_rva(rt, rn, (long)v));
+            }
+        }
+        if (nn && an)
+        {
+            no = pa30_rva_off(buf, len, an);
+            for (i = 0; i < nn && no != 0xFFFFFFFFUL &&
+                        no + 4 * (i + 1) <= len; ++i)
+            {
+                unsigned long v = rd32(buf + no + 4 * i);
+                if (v)
+                    pa30_set_u32(buf, no + 4 * i,
+                                 (unsigned long)pa30_map_rva(rt, rn, (long)v));
+            }
+        }
+    }
+}
+
+/* RiftTransformRelativeJmpsI386: map the target of E9 near jumps
+ * (msdelta.dll.c:48542-48692). */
+static void pa30_transform_reljmps(unsigned char *buf, unsigned long len,
+                                   const RIFTENTRY *rt, unsigned rn,
+                                   const unsigned char *hint,
+                                   unsigned long sizeOfImage)
+{
+    unsigned long pe, opt, sh, nsec, s;
+    if (len < 0x40) return;
+    pe = rd32(buf + 0x3C);
+    if (pe + 24 > len || memcmp(buf + pe, "PE\0\0", 4)) return;
+    opt = pe + 24;
+    if (rd16(buf + opt) != 0x10B) return;
+    nsec = rd16(buf + pe + 6);
+    sh = opt + rd16(buf + pe + 20);
+    for (s = 0; s < nsec && sh + 40 * s + 40 <= len; ++s)
+    {
+        unsigned long o = sh + 40 * s;
+        unsigned long flags = rd32(buf + o + 36);
+        unsigned long vs = rd32(buf + o + 8);
+        unsigned long rs = rd32(buf + o + 16);
+        unsigned long raw = rd32(buf + o + 20);
+        unsigned long va = rd32(buf + o + 12);
+        unsigned long span, p;
+        if (!(flags & 0x20000000UL)) continue;
+        if (vs > rs) vs = rs;
+        if (vs < 5 || raw + vs > len) continue;
+        span = raw + vs;
+        for (p = raw; p + 5 <= span; ++p)
+        {
+            long rel, newrel, siteRVA, targetRVA, mappedSite, mappedTarget;
+            unsigned long to, opLen = 5, hintAt = p;
+            if (buf[p] == 0x0F && p + 6 <= span &&
+                (buf[p + 1] & 0xF0) == 0x80)
+            {
+                opLen = 6; hintAt = p + 1;
+            }
+            else if (buf[p] != 0xE9)
+                continue;
+            if (hint && (hint[hintAt] | hint[hintAt + 1] |
+                         hint[hintAt + 2] | hint[hintAt + 3] |
+                         hint[hintAt + 4]) & 0x01)
+                continue;
+            rel = (long)rd32(buf + hintAt + 1);
+            siteRVA = (long)(va + (p - raw) + opLen);
+            targetRVA = siteRVA + rel;
+            if (targetRVA < 0 || (unsigned long)targetRVA >= sizeOfImage)
+                continue;
+            to = pa30_rva_off(buf, len, (unsigned long)targetRVA);
+            if (to == 0xFFFFFFFFUL || (hint && (hint[to] & 0x01))) continue;
+            mappedSite = (long)pa30_map_rva(rt, rn, (unsigned long)siteRVA);
+            mappedTarget = (long)pa30_map_rva(rt, rn,
+                                              (unsigned long)targetRVA);
+            newrel = mappedTarget - mappedSite;
+            if (newrel != rel)
+                pa30_set_u32(buf, hintAt + 1, (unsigned long)newrel);
+            p += opLen - 1;
+        }
+    }
+}
+
+static void pa30_res_walk(unsigned char *buf, unsigned long base,
+                          unsigned long rsize, unsigned long rrva,
+                          const RIFTENTRY *rt, unsigned rn,
+                          unsigned long relOff, int depth)
+{
+    unsigned long d = base + relOff, n, i, mbase;
+    if (depth > 16 || d + 16 > base + rsize) return;
+    mbase = (unsigned long)pa30_map_rva(rt, rn, (long)rrva);
+    n = (unsigned long)rd16(buf + d + 12) + rd16(buf + d + 14);
+    if (n > 4096) return;
+    for (i = 0; i < n; ++i)
+    {
+        unsigned long e = d + 16 + 8 * i;
+        unsigned long name, target;
+        if (e + 8 > base + rsize) break;
+        name = rd32(buf + e);
+        target = rd32(buf + e + 4);
+        if (name & 0x80000000UL)
+        {
+            unsigned long so = name & 0x7FFFFFFFUL;
+            unsigned long nr = (unsigned long)pa30_map_rva(rt, rn,
+                                            (long)(rrva + so));
+            pa30_set_u32(buf, e, 0x80000000UL |
+                         (nr >= mbase ? nr - mbase : 0));
+        }
+        if (target & 0x80000000UL)
+        {
+            unsigned long sub = target & 0x7FFFFFFFUL;
+            unsigned long nr = (unsigned long)pa30_map_rva(rt, rn,
+                                            (long)(rrva + sub));
+            pa30_set_u32(buf, e + 4,
+                         0x80000000UL | (nr >= mbase ? nr - mbase : 0));
+            pa30_res_walk(buf, base, rsize, rrva, rt, rn, sub, depth + 1);
+        }
+        else if (target < rsize)
+        {
+            /* Resource data entries are re-laid-out by the target-side
+             * resource builder; leave their OffsetToData alone here. */
+        }
+    }
+}
+
 static void pa30_transform_resources(unsigned char *buf, unsigned long len,
                                      const RIFTENTRY *rt, unsigned rn)
 {
-    unsigned long pe, opt, rrva, rsize, off, i;
+    unsigned long pe, opt, rrva, rsize, off;
     if (len < 0x40) return;
     pe = rd32(buf + 0x3C);
     if (pe + 24 > len || memcmp(buf + pe, "PE\0\0", 4)) return;
@@ -1495,24 +1709,17 @@ static void pa30_transform_resources(unsigned char *buf, unsigned long len,
     if (!rrva || !rsize) return;
     off = pa30_rva_off(buf, len, rrva);
     if (off == 0xFFFFFFFFUL || off + rsize > len) return;
-    for (i = 0; i + 4 <= rsize; i += 4)
-    {
-        unsigned long v = rd32(buf + off + i);
-        if (!(v & 0x80000000UL)) continue;
-        if ((v & 0x7FFFFFFFUL) >= rsize) continue;
-        {
-            unsigned long nr = (unsigned long)pa30_map_rva(rt, rn,
-                                        (long)(rrva + (v & 0x7FFFFFFFUL)));
-            pa30_set_u32(buf, off + i, 0x80000000UL | (nr & 0xFFFUL));
-        }
-    }
+    pa30_res_walk(buf, off, rsize, rrva, rt, rn, 0, 0);
 }
 
 static void pa30_transform_relocs(unsigned char *buf, unsigned long len,
-                                  const RIFTENTRY *rt, unsigned rn)
+                                  const RIFTENTRY *rt, unsigned rn,
+                                  unsigned long oldBase,
+                                  unsigned long newBase,
+                                  unsigned long sizeOfImage)
 {
-    unsigned long pe, opt, rrva, rsize, off, end, n = 0, i, w;
-    RELOC rel[4096];
+    unsigned long pe, opt, rrva, rsize, off, end, n = 0, i, w, cap = 0;
+    RELOC *rel;
 
     if (len < 0x40) return;
     pe = rd32(buf + 0x3C);
@@ -1526,6 +1733,21 @@ static void pa30_transform_relocs(unsigned char *buf, unsigned long len,
     if (off == 0xFFFFFFFFUL || off + rsize > len) return;
     end = off + rsize;
 
+    /* Count entries first: large PEs can have tens of thousands of them. */
+    {
+        unsigned long o = off;
+        while (o + 8 <= end)
+        {
+            unsigned long bs = rd32(buf + o + 4);
+            if (bs < 8 || bs > end - o) break;
+            cap += (bs - 8) / 2;
+            o += bs;
+        }
+    }
+    if (!cap) return;
+    rel = (RELOC *)malloc((size_t)cap * sizeof(*rel));
+    if (!rel) return;
+
     while (off + 8 <= end)
     {
         unsigned long page = rd32(buf + off);
@@ -1538,7 +1760,19 @@ static void pa30_transform_relocs(unsigned char *buf, unsigned long len,
             unsigned long type = entry >> 12;
             unsigned long roff = entry & 0xFFF;
             if (!type) continue;
-            if (n >= sizeof(rel) / sizeof(rel[0])) break;
+            /* The DLL's ReadRelocationEntries rebases the VA stored at the
+             * relocation site itself (msdelta.dll.c:35375). */
+            {
+                unsigned long fo = pa30_rva_off(buf, len, page + roff);
+                if (fo != 0xFFFFFFFFUL && fo + 4 <= len)
+                {
+                    unsigned long v = rd32(buf + fo);
+                    if (v >= oldBase && v < oldBase + sizeOfImage)
+                        pa30_set_u32(buf, fo,
+                            (unsigned long)pa30_map_rva(rt, rn,
+                                (long)(v - oldBase)) + newBase);
+                }
+            }
             rel[n].rva = (unsigned long)pa30_map_rva(rt, rn,
                                                      (long)(page + roff));
             rel[n].type = (unsigned short)type;
@@ -1549,7 +1783,7 @@ static void pa30_transform_relocs(unsigned char *buf, unsigned long len,
         }
         off += bsize;
     }
-    if (!n) return;
+    if (!n) { free(rel); return; }
     qsort(rel, n, sizeof(rel[0]), cmp_reloc);
 
     off = pa30_rva_off(buf, len, rrva);
@@ -1558,10 +1792,12 @@ static void pa30_transform_relocs(unsigned char *buf, unsigned long len,
     while (i < n && w + 8 <= end)
     {
         unsigned long page = rel[i].rva & 0xFFFFF000UL;
-        unsigned long j = i, k, cnt, bsize, wp;
+        unsigned long j = i, k, cnt, bsize, wp, words = 0;
         while (j < n && (rel[j].rva & 0xFFFFF000UL) == page) ++j;
         cnt = j - i;
-        bsize = 8 + 2 * cnt;
+        for (k = i; k < j; ++k)
+            words += (rel[k].type == 4) ? 2 : 1;
+        bsize = 8 + 2 * words;
         if (bsize & 2) bsize += 2;
         if (w + bsize > end) break;
         pa30_set_u32(buf, w, page);
@@ -1588,6 +1824,7 @@ static void pa30_transform_relocs(unsigned char *buf, unsigned long len,
         w = wp;
         i = j;
     }
+    free(rel);
 }
 
 /* ---------- Decompress ---------------------------------------------------- */
@@ -1631,13 +1868,6 @@ static int compo_decompress(BITR *br, const COMPFMT *fmt,
             ++segIndex;
         if ((int)segIndex != currentSeg)
         {
-            if (fmt->nSeg == 1 && fmt->boundary[0] == 0)
-            {
-                make_fixed_lengths(lens, 600);
-                make_fixed_lengths(lens + 600, 256);
-                make_fixed_lengths(lens + 856, 16);
-            }
-            else
             {
                 memcpy(lens, fmt->lens[segIndex], sizeof(lens));
             }
@@ -2623,26 +2853,45 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
                         /* NormalizeCoffImage zeroes the PE checksum. */
                         memset(prepared + lfa + 24 + 0x40, 0, 4);
                         {
-                            unsigned char *relocMask =
+                            unsigned char *hintBuf =
                                 (unsigned char *)malloc(sourceLen);
-                            if (relocMask)
+                            if (hintBuf)
                             {
-                                memset(relocMask, 0x02, sourceLen);
-                                pa30_reloc_mask(prepared, sourceLen, relocMask);
+                                memset(hintBuf, 0x02, sourceLen);
+                                pa30_reloc_mask(prepared, sourceLen, hintBuf);
+                                if (getenv("PA30_HINTDUMP"))
+                                {
+                                    FILE *hf = fopen(getenv("PA30_HINTDUMP"), "wb");
+                                    if (hf)
+                                    {
+                                        fwrite(hintBuf, 1, (size_t)sourceLen, hf);
+                                        fclose(hf);
+                                    }
+                                }
                             }
                             pa30_transform_pointers(prepared, sourceLen, rt, rn,
                                 oldBase, (unsigned long)peImageBase,
-                                sizeOfImage, sizeOfHeaders, relocMask);
-                            free(relocMask);
+                                sizeOfImage, sizeOfHeaders, hintBuf);
+                            pa30_transform_relocs(prepared, sourceLen, rt, rn,
+                                oldBase, (unsigned long)peImageBase,
+                                sizeOfImage);
+                            pa30_transform_resources(prepared, sourceLen,
+                                                     rt, rn);
+                            pa30_mark_import_section(prepared, sourceLen);
+                            if (getenv("PA30_BLIND"))
+                                pa30_transform_rvas(prepared, sourceLen, rt, rn,
+                                    sizeOfImage, sizeOfHeaders);
+                            else
+                                pa30_rewrite_imports(prepared, sourceLen,
+                                                     rt, rn);
+                            pa30_transform_relcalls(prepared, sourceLen, rt,
+                                                    rn, hintBuf, sizeOfImage);
+                            pa30_transform_reljmps(prepared, sourceLen, rt,
+                                                   rn, hintBuf, sizeOfImage);
+                            pa30_transform_exports(prepared, sourceLen,
+                                                   rt, rn);
+                            free(hintBuf);
                         }
-                        pa30_transform_relocs(prepared, sourceLen, rt, rn);
-                        pa30_transform_resources(prepared, sourceLen, rt, rn);
-                        pa30_mark_import_section(prepared, sourceLen);
-                        if (getenv("PA30_BLIND"))
-                            pa30_transform_rvas(prepared, sourceLen, rt, rn,
-                                sizeOfImage, sizeOfHeaders);
-                        else
-                            pa30_rewrite_imports(prepared, sourceLen, rt, rn);
                     }
                     /* Verification hook: use the DLL's dumped transformed
                      * seed instead of our computed one. */
