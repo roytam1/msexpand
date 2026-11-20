@@ -719,28 +719,42 @@ static int cf_read_symbol(COMPF *cf, BITR *br, SYMBOL *sym)
     return 0;
 }
 
-/* Reverse DELTA_FLAG_E8 translation once the whole target is decoded. */
+/* DELTA_FLAG_E8 post-processing, mirroring the DLL's
+ * PostProcessI386E8Component::InternalProcess: scan for E8 opcodes and
+ * adjust their rel32 by the byte position (or by the buffer size for a
+ * negative encoded value). */
 static void e8_untranslate(unsigned char *out, unsigned long outLen)
 {
-    unsigned long i;
-    for (i = 0; i + 4 < outLen; ++i)
+    unsigned long i = 0;
+    long v1 = 0;                       /* byte position of the current E8 */
+    long v5 = (long)(outLen < 0x40000000UL ? outLen : 0x40000000UL);
+    long v7 = v5;
+
+    while (v7 > 0)
     {
-        unsigned long raw;
-        long rel;
-        if (out[i] != 0xE8)
-            continue;
-        raw = (unsigned long)out[i + 1] |
-              ((unsigned long)out[i + 2] << 8) |
-              ((unsigned long)out[i + 3] << 16) |
-              ((unsigned long)out[i + 4] << 24);
-        rel = (raw & 0x80000000UL) ? (long)raw - 0x100000000L : (long)raw;
-        if (rel < -0x8000 || rel >= 0x8000)
-            continue;               /* ordinary data, not a CALL rel32 */
-        rel -= (long)i;
-        out[i + 1] = (unsigned char)(rel & 0xFF);
-        out[i + 2] = (unsigned char)((rel >> 8) & 0xFF);
-        out[i + 3] = (unsigned char)((rel >> 16) & 0xFF);
-        out[i + 4] = (unsigned char)((rel >> 24) & 0xFF);
+        /* advance to the next 0xE8 opcode */
+        while (v7 > 0 && i + 1 < outLen && out[i] != 0xE8)
+        {
+            ++i;
+            ++v1;
+            --v7;
+        }
+        if (v7 < 5 || i + 5 > outLen)
+            break;
+        {
+            long v9 = (long)rd32(out + i + 1);
+            if (v9 + v1 >= 0 && v5 > v9)
+            {
+                long nv = (v9 < 0) ? v9 + v5 : v9 - v1;
+                out[i + 1] = (unsigned char)(nv & 0xFF);
+                out[i + 2] = (unsigned char)((nv >> 8) & 0xFF);
+                out[i + 3] = (unsigned char)((nv >> 16) & 0xFF);
+                out[i + 4] = (unsigned char)((nv >> 24) & 0xFF);
+            }
+        }
+        v7 -= 5;
+        i += 5;
+        v1 += 5;
     }
 }
 
