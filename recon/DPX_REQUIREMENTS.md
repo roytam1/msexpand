@@ -1107,3 +1107,24 @@ Phase D is the genuine open-ended piece.
     is kept as the seed-buffer trace starting point (GetChars is only called
     at buffer boundaries, so it needs a different hook to dump every seed
     byte).  No further source change this round.
+
+    **PA30 TransformCoffImage implemented (part 33).**  `msdelta_rift.gdb`
+    extracted the DLL's `AbstractRiftHintTransformComponent::MapRva` table —
+    it is the 88-entry compression RIFT map, and `RiftTable::Map` is
+    `rva + (right-left)` of the nearest preceding entry.  `msdelta_seed.gdb`
+    dumped the DLL's *fully transformed* seed and revealed the exact
+    `RiftTransformRelocationsI386Component::TransformInferredRelocations`
+    algorithm: scan from PE SizeOfHeaders, and rewrite every dword that is a
+    VA within `[oldImageBase, oldImageBase+SizeOfImage)` to
+    `MapRva(va-oldBase) + newBase`, using a packed per-byte hint array to
+    avoid overlapping rewrites (advance 4 bytes on a hit, 1 otherwise).
+
+    `delta.c` now implements this as `pa30_transform_pointers()` (plus the
+    timestamp / ImageBase header patches) and applies it to a copy of the
+    source.  Verified byte-exact against the DLL's seed: file 0x400 =
+    `13 A2 01 10` (was `9B 80 40 00`), 0x45C = `90 40 04 10` (was
+    `90 A0 40 00`).  Blob 1 improves to 83512 bytes decoded with 7815 wrong
+    (was 10168); first divergence moved 1026 -> 1116.  At the new divergence
+    our seed byte *equals* the DLL's, so the remaining error is RIFT match
+    source positioning, not the seed transform.  Blob 0, generated vectors,
+    PA19, XPRESS, LZX and LZMS remain byte-exact.

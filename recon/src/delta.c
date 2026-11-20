@@ -727,6 +727,69 @@ static void e8_untranslate(unsigned char *out, unsigned long outLen)
     }
 }
 
+/* ---------- PA30 PE seed transform ---------------------------------------- */
+/* RiftTable::Map: add the rift of the nearest entry whose left <= rva. */
+static unsigned long pa30_map_rva(const RIFTENTRY *rt, unsigned rn,
+                                  unsigned long rva)
+{
+    unsigned i;
+    long rift = 0;
+    for (i = 0; i < rn; ++i)
+    {
+        if (rt[i].left <= (__int64)rva)
+            rift = (long)(rt[i].right - rt[i].left);
+        else
+            break;
+    }
+    return (unsigned long)((long)rva + rift);
+}
+
+/* Mirrors the DLL's RiftTransformRelocationsI386Component::
+ * TransformInferredRelocations: scan from SizeOfHeaders, rewriting any
+ * aligned dword that is a VA inside the old image to
+ * MapRva(va - oldBase) + newBase.  A packed hint array prevents overlapping
+ * hits from being rewritten twice. */
+static void pa30_transform_pointers(unsigned char *buf, unsigned long len,
+                                    const RIFTENTRY *rt, unsigned rn,
+                                    unsigned long oldBase,
+                                    unsigned long newBase,
+                                    unsigned long sizeOfImage,
+                                    unsigned long sizeOfHeaders)
+{
+    unsigned char *hint;
+    unsigned long pos;
+    unsigned long end = len >= 4 ? len - 4 : 0;
+
+    if (!sizeOfHeaders || sizeOfHeaders >= end || !sizeOfImage)
+        return;
+    hint = (unsigned char *)calloc((size_t)len, 1);
+    if (!hint) return;
+    pos = sizeOfHeaders;
+    while (pos < end)
+    {
+        unsigned long v = rd32(buf + pos);
+        if (v >= oldBase && v < oldBase + sizeOfImage)
+        {
+            unsigned k;
+            unsigned long nv;
+            if (((hint[pos] | hint[pos + 1] | hint[pos + 2] | hint[pos + 3])
+                 & 0x02) == 0)
+            {
+                nv = pa30_map_rva(rt, rn, v - oldBase) + newBase;
+                for (k = 0; k < 4; ++k)
+                {
+                    buf[pos + k] = (unsigned char)(nv >> (8 * k));
+                    hint[pos + k] |= 0x01;
+                }
+            }
+            pos += 4;
+        }
+        else
+            pos += 1;
+    }
+    free(hint);
+}
+
 /* ---------- Decompress ---------------------------------------------------- */
 static void compo_partial_dump(const unsigned char *out, unsigned long pos)
 {
@@ -1502,8 +1565,15 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
                         mask, nset, pb.bitpos);
                 }
                 if (rift_read(&pb, &rt, &rn) == 0 && getenv("PA30_DEBUG"))
+                {
+                    unsigned qi;
                     fprintf(stderr, "PRE rift2(compression) n=%u at bit %lu\n",
                             rn, pb.bitpos);
+                    for (qi = 0; qi < rn; ++qi)
+                        fprintf(stderr, "  rt[%u] left=%I64d right=%I64d rift=%I64d\n",
+                                qi, rt[qi].left, rt[qi].right,
+                                rt[qi].right - rt[qi].left);
+                }
             }
         }
 
@@ -1545,33 +1615,21 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
                     /* PE32 optional-header ImageBase (magic 0x10B at lfa+24,
                      * ImageBase at +0x1C) is rebased to the target image. */
                     if (rd16(prepared + lfa + 24) == 0x10B &&
-                        lfa + 24 + 0x20 <= sourceLen)
+                        lfa + 24 + 0x40 <= sourceLen)
                     {
+                        unsigned long oldBase =
+                            rd32(prepared + lfa + 24 + 0x1C);
+                        unsigned long sizeOfImage =
+                            rd32(prepared + lfa + 24 + 0x38);
+                        unsigned long sizeOfHeaders =
+                            rd32(prepared + lfa + 24 + 0x3C);
                         prepared[lfa + 24 + 0x1C] = (unsigned char)(peImageBase & 0xFF);
                         prepared[lfa + 24 + 0x1D] = (unsigned char)((peImageBase >> 8) & 0xFF);
                         prepared[lfa + 24 + 0x1E] = (unsigned char)((peImageBase >> 16) & 0xFF);
                         prepared[lfa + 24 + 0x1F] = (unsigned char)((peImageBase >> 24) & 0xFF);
-                    }
-                    /* Try the full PA19 PE seed transform, driven by the
-                     * pre-blob ImageBase/TimeStamp and its RVA map. */
-                    {
-                        unsigned long *pairs = NULL;
-                        if (tmpN)
-                        {
-                            unsigned q;
-                            pairs = (unsigned long *)malloc(
-                                (size_t)tmpN * 2 * sizeof(unsigned long));
-                            if (pairs)
-                                for (q = 0; q < tmpN; ++q)
-                                {
-                                    pairs[2 * q] = (unsigned long)tmp[q].left;
-                                    pairs[2 * q + 1] = (unsigned long)tmp[q].right;
-                                }
-                        }
-                        PeFixPrepareSeed(prepared, sourceLen,
-                            0, 0, (unsigned long)peImageBase, peTimeStamp,
-                            pairs, tmpN);
-                        free(pairs);
+                        pa30_transform_pointers(prepared, sourceLen, rt, rn,
+                            oldBase, (unsigned long)peImageBase,
+                            sizeOfImage, sizeOfHeaders);
                     }
                     decompressSrc = prepared;
                     if (getenv("PA30_DEBUG")) fprintf(stderr,
