@@ -1060,3 +1060,25 @@ Phase D is the genuine open-ended piece.
     all remain byte-exact.  `PA30_DEBUG`, `PA30_SYMDBG`, `PA30_PARTIAL` guard
     the new tracing.  Next step: use `msdelta_rn.gdb` at a failing match to
     recover the exact RIFT-adjusted distance formula.
+
+    **Compo port, part 31 (seed normalization).**  `msdelta_sym.gdb` compares
+    our symbol stream with the DLL's at matching combined-buffer positions:
+    they are identical (same 0x54000 rift match at output 255, same literals),
+    so the divergence is not in the symbol decode.  Dumping the basis bytes
+    showed the DLL writes the pre-blob target COFF TimeStamp (0x5344BCA1) at
+    PE+8 and rebases the optional-header ImageBase (0x00400000 -> 0x10000000)
+    in a *copy* of the source before decoding.  `DeltaApply` now parses those
+    two fields from the pre blob, makes a normalized source copy (also via
+    `PeFixPrepareSeed` with the pre-blob RVA map), and feeds it to the
+    decompressor.  Raw-distance (k<3) matches now always add srcLen (the
+    implicit rift), not just when the table is empty; zero distances are
+    allowed as identity repeats.  RIFT entries are selected by nearest
+    preceding `left`, not by `right >= pos`.
+
+    Result: blob 1 now decodes to position 83512 (was 1084) with 10168/83512
+    wrong bytes; the first divergence moved 224 -> 256 -> 302 -> 1026 as each
+    fix landed (a history experiment that moved it to 298 was reverted
+    because it broke blob 0).  The remaining differences are PE-transform
+    fields (relocations / relative branches) at output offsets >= 298, plus
+    one out-of-range RIFT match at 83512.  Blob 0, generated vectors, PA19,
+    XPRESS, LZX and LZMS all remain byte-exact.

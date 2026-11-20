@@ -823,6 +823,7 @@ static int compo_decompress(BITR *br, const COMPFMT *fmt,
                     if (getenv("PA30_DEBUG")) fprintf(stderr,
                         "DECOMP riftfail: pos=%lu sp=%ld len=%lu riftOff=%ld bitpos=%lu\n",
                         pos, sp, len, riftOff, br->bitpos);
+                    compo_partial_dump(out, pos);
                     return -1;
                 }
                 if (len > outLen - pos)
@@ -838,12 +839,15 @@ static int compo_decompress(BITR *br, const COMPFMT *fmt,
             }
             else if (sym.value < 0x54000UL)
             {
-                dist = (long)(sym.value - 172032UL) - riftOff;
-                /* With no RIFT table the DLL applies an implicit rift of
-                 * -sourceLen: the match distances are relative to the start
-                 * of the source image in the combined window. */
-                if (riftN == 0)
-                    dist += (long)srcLen;
+                /* k<3 raw distances are relative to the start of the source
+                 * image in the combined [source][output] window, so the DLL
+                 * applies an implicit rift of -srcLen unconditionally (even
+                 * when a RIFT table is present for 0x54000 matches). */
+                dist = (long)(sym.value - 172032UL) + (long)srcLen;
+                if (getenv("PA30_SYMDBG") && pos < 512)
+                    fprintf(stderr,
+                        "  DIST pos=%lu raw=%ld riftOff=%ld dist=%ld len=%lu\n",
+                        pos, (long)(sym.value - 172032UL), riftOff, dist, len);
             }
             else if (sym.value < 0x54004UL)
             {
@@ -859,7 +863,7 @@ static int compo_decompress(BITR *br, const COMPFMT *fmt,
                 /* The match window is the source file followed by the
                  * bytes decoded so far, so a distance larger than `pos`
                  * reaches back into the source. */
-                if (dist == 0 || dist > (long)(pos + srcLen) ||
+                if (dist > (long)(pos + srcLen) ||
                     dist < -(long)srcLen)
                 {
                     if (getenv("PA30_DEBUG")) fprintf(stderr,
@@ -1447,6 +1451,9 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
         unsigned rn = 0;
         unsigned tmpN = 0;
         COMPFMT cf;
+        unsigned long peTimeStamp = 0;
+        unsigned __int64 peImageBase = 0;
+        const unsigned char *decompressSrc = source;
 
         /* The pre blob is bit-packed with the same 3-bit leader.  It holds
          * the target PE info, its RVA map, optional CLI metadata, and the
@@ -1455,6 +1462,16 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
         {
             BITR pb;
             br_init(&pb, pre, preLen);
+            {
+                BITR ti = pb;
+                unsigned long gp;
+                peImageBase = br_read(&ti, 64);
+                gp = br_read(&ti, 32);
+                peTimeStamp = br_read(&ti, 32);
+                if (getenv("PA30_DEBUG")) fprintf(stderr,
+                    "PRE img=%016I64x gp=%08lX ts=%08lX\n",
+                    peImageBase, gp, peTimeStamp);
+            }
             pb.bitpos += 64 + 32 + 32;   /* ImageBase, GlobalPointer, TimeStamp */
             if (getenv("PA30_DEBUG")) fprintf(stderr,
                 "PRE targetinfo at bit %lu\n", pb.bitpos);
@@ -1484,8 +1501,6 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
                         "PRE cli mask=%016I64x nset=%u at bit %lu\n",
                         mask, nset, pb.bitpos);
                 }
-                free(tmp);
-                tmp = NULL;
                 if (rift_read(&pb, &rt, &rn) == 0 && getenv("PA30_DEBUG"))
                     fprintf(stderr, "PRE rift2(compression) n=%u at bit %lu\n",
                             rn, pb.bitpos);
@@ -1512,14 +1527,65 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
             rc = compfmt_read(&cf, &pbr);
         if (getenv("PA30_DEBUG")) fprintf(stderr,
             "COMPFMT nSeg=%u rc=%d at bit %lu\n", cf.nSeg, rc, pbr.bitpos);
+        if (rc == 0 && peTimeStamp && sourceLen >= 0x40)
+        {
+            unsigned long lfa = rd32(source + 0x3C);
+            if (lfa + 24 <= sourceLen && memcmp(source + lfa, "PE\0\0", 4) == 0)
+            {
+                unsigned char *prepared = (unsigned char *)malloc(sourceLen);
+                if (prepared)
+                {
+                    memcpy(prepared, source, (size_t)sourceLen);
+                    /* NormalizeCoffImage writes the target COFF timestamp
+                     * into the source PE before the delta is decoded. */
+                    prepared[lfa + 8]     = (unsigned char)(peTimeStamp & 0xFF);
+                    prepared[lfa + 9]     = (unsigned char)((peTimeStamp >> 8) & 0xFF);
+                    prepared[lfa + 10]    = (unsigned char)((peTimeStamp >> 16) & 0xFF);
+                    prepared[lfa + 11]    = (unsigned char)((peTimeStamp >> 24) & 0xFF);
+                    /* PE32 optional-header ImageBase (magic 0x10B at lfa+24,
+                     * ImageBase at +0x1C) is rebased to the target image. */
+                    if (rd16(prepared + lfa + 24) == 0x10B &&
+                        lfa + 24 + 0x20 <= sourceLen)
+                    {
+                        prepared[lfa + 24 + 0x1C] = (unsigned char)(peImageBase & 0xFF);
+                        prepared[lfa + 24 + 0x1D] = (unsigned char)((peImageBase >> 8) & 0xFF);
+                        prepared[lfa + 24 + 0x1E] = (unsigned char)((peImageBase >> 16) & 0xFF);
+                        prepared[lfa + 24 + 0x1F] = (unsigned char)((peImageBase >> 24) & 0xFF);
+                    }
+                    /* Try the full PA19 PE seed transform, driven by the
+                     * pre-blob ImageBase/TimeStamp and its RVA map. */
+                    {
+                        unsigned long *pairs = NULL;
+                        if (tmpN)
+                        {
+                            unsigned q;
+                            pairs = (unsigned long *)malloc(
+                                (size_t)tmpN * 2 * sizeof(unsigned long));
+                            if (pairs)
+                                for (q = 0; q < tmpN; ++q)
+                                {
+                                    pairs[2 * q] = (unsigned long)tmp[q].left;
+                                    pairs[2 * q + 1] = (unsigned long)tmp[q].right;
+                                }
+                        }
+                        PeFixPrepareSeed(prepared, sourceLen,
+                            0, 0, (unsigned long)peImageBase, peTimeStamp,
+                            pairs, tmpN);
+                        free(pairs);
+                    }
+                    decompressSrc = prepared;
+                    if (getenv("PA30_DEBUG")) fprintf(stderr,
+                        "PRE seedt patch TS at %08lX\n", lfa + 8);
+                }
+            }
+        }
         if (rc == 0)
         {
             result = (unsigned char *)malloc(h.targetSize);
             if (!result)
                 rc = -1;
             else
-                rc = compo_decompress(&pbr, &cf,
-                    (const unsigned char *)source, sourceLen,
+                rc = compo_decompress(&pbr, &cf, decompressSrc, sourceLen,
                     rt, rn, result, h.targetSize, (int)(h.flags & 0x1));
             if (rc != 0)
             {
@@ -1527,6 +1593,8 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
                 result = NULL;
             }
         }
+        if (decompressSrc != source) free((void *)decompressSrc);
+        free(tmp);
         free(rt);
         if (rc != 0)
         {
