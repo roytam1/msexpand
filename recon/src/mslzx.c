@@ -314,11 +314,13 @@ static int read_rep_tree(struct bitstream *b, int num_elements,
 
 static int read_trees(struct state *st)
 {
-    int nmain, i;
+    int nmain;
     struct bitstream *b = &st->bs;
     nmain = num_main_syms(st);
     if (!read_rep_tree(b, NUM_CHARS, st->main_prev, st->main_len)) return 0;
-    for (i = NUM_CHARS; i < nmain; ++i) st->main_prev[i] = 0;
+    /* The whole main tree, including the position-slot half, is delta
+     * encoded against the previous block's tree.  Zeroing the second half
+     * breaks any stream with more than one tree-bearing block. */
     if (!read_rep_tree(b, nmain - NUM_CHARS, st->main_prev + NUM_CHARS,
                        st->main_len + NUM_CHARS)) return 0;
     if (!make_table(nmain, st->main_len, MAIN_TABLE_BITS,
@@ -507,7 +509,10 @@ int MsLzxDecompressSeededMulti(const unsigned char *const *chunks,
     }
     if (produced < outLen) goto done;
 
-    /* E8 x86 call-target translation */
+    /* E8 x86 call-target translation.  An absolute target below the stream's
+     * size is turned back into a relative one by subtracting the byte
+     * position; a wrapped (negative) target in the compensating range is
+     * corrected by adding the size.  Anything else was never translated. */
     if (e8present && outLen > 10) {
         u32 limit = outLen;
         u32 i = 0;
@@ -518,13 +523,19 @@ int MsLzxDecompressSeededMulti(const unsigned char *const *chunks,
                 if (window[i] == 0xE8) {
                     u32 v = window[i+1] | ((u32)window[i+2] << 8) |
                             ((u32)window[i+3] << 16) | ((u32)window[i+4] << 24);
-                    if ((s32)v >= -(s32)i && v < e8base) {
-                        u32 d = (v >= i) ? v - i : v + e8base;
-                        window[i+1] = (u8)d;
-                        window[i+2] = (u8)(d >> 8);
-                        window[i+3] = (u8)(d >> 16);
-                        window[i+4] = (u8)(d >> 24);
+                    u32 d;
+                    if (v < e8base)
+                        d = v - i;
+                    else if ((s32)v < 0 && (s32)v >= -(s32)i)
+                        d = v + e8base;
+                    else {
+                        i += 4;
+                        continue;
                     }
+                    window[i+1] = (u8)d;
+                    window[i+2] = (u8)(d >> 8);
+                    window[i+3] = (u8)(d >> 16);
+                    window[i+4] = (u8)(d >> 24);
                     i += 4;
                 }
             }
