@@ -1462,3 +1462,25 @@ Phase D is the genuine open-ended piece.
     **203/209** byte-exact targets with no crash.  Six targets remain wrong;
     their seeds differ at a few relative-operand positions where the DLL's
     hint bits come from stages we still haven't identified.
+
+
+    **Full Windows 10 parity (part 52).**  Reading the DLL's hint pipeline
+    directly closed the rest of the KB5131083 gap:
+
+      - MarkNonExeComponent::Transform (msdelta.dll.c:42457) marks every
+        non-executable section plus SizeOfHeaders as handled.  We added the
+        matching pa30_mark_nonexe stage; this alone fixed poqexec.exe,
+        cbscore.dll, tiworker.exe, wrpint.dll and cntrtextinstaller.dll.
+        The DLL also memsets each data directory by RVA, but reproducing
+        that regressed real deltas, so it is deliberately omitted.
+      - the offset-rift table must be built even when the pre blob carries
+        no rifts: ift_multiply treats an empty table as identity, so the
+        source PE section map alone still yields the DLL's table.  The
+        previous if (n0 && rt && rn) guard left globalinstallorder.xml
+        with an identity map, so a 0x54000 match copied "alue\0\0\0\0"
+        instead of "Component".  Removing the guard fixed the last target.
+
+    Verification: KB5131083 **209/209** and KB2959977 **513/513** native,
+    both byte-exact against OS delegation.  blob 0/1, d0/d1, PA19, XPRESS,
+    LZX and LZMS all remain byte-exact.  OS delegation is still the default;
+    the native path is opt-in via PA30_NO_OS=1.

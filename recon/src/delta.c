@@ -1222,60 +1222,44 @@ static void pa30_reloc_mask(const unsigned char *buf, unsigned long len,
         off += bsize;
     }
 
-    /* RiftTransformResource marks every resource byte as handled; the
-     * relative-call/jump passes skip targets with this hint bit set. */
-    {
-        unsigned long rr = rd32(buf + opt + 0x60 + 2 * 8);
-        unsigned long rsz = rd32(buf + opt + 0x60 + 2 * 8 + 4);
-        unsigned long nsec = rd16(buf + pe + 6);
-        unsigned long sh = opt + rd16(buf + pe + 20);
-        unsigned long s, k;
-        if (rr && rsz)
-            for (s = 0; s < nsec && sh + 40 * s + 40 <= len; ++s)
-            {
-                unsigned long o = sh + 40 * s;
-                unsigned long va = rd32(buf + o + 12);
-                unsigned long vs = rd32(buf + o + 8);
-                unsigned long raw = rd32(buf + o + 20);
-                unsigned long rs = rd32(buf + o + 16);
-                if (rr >= va && rr < va + vs)
-                {
-                    unsigned long n = rs;
-                    if (n > len - raw) n = len - raw;
-                    if (raw < len)
-                        for (k = 0; k < n; ++k)
-                            mask[raw + k] |= 0x01U;
-                    break;
-                }
-            }
-    /* RiftTransformImports marks the import section as handled too: the
-     * DLL's hint map has bit 0x01 set over .idata, which makes the
-     * relative-call/jump scans skip rewrite targets there. */
-    {
-        unsigned long ir = rd32(buf + opt + 0x60 + 8);
-        unsigned long nsec = rd16(buf + pe + 6);
-        unsigned long sh = opt + rd16(buf + pe + 20);
-        unsigned long s, k;
-        if (ir)
-            for (s = 0; s < nsec && sh + 40 * s + 40 <= len; ++s)
-            {
-                unsigned long o = sh + 40 * s;
-                unsigned long va = rd32(buf + o + 12);
-                unsigned long vs = rd32(buf + o + 8);
-                unsigned long raw = rd32(buf + o + 20);
-                unsigned long rs = rd32(buf + o + 16);
-                if (ir >= va && ir < va + vs)
-                {
-                    unsigned long n = rs;
-                    if (n > len - raw) n = len - raw;
-                    if (raw < len)
-                        for (k = 0; k < n; ++k)
-                            mask[raw + k] |= 0x03U;
-                    break;
-                }
-            }
-    }
 }
+
+/* Mirrors compo::MarkNonExeComponent::Transform (msdelta.dll.c:42457):
+ * every byte of a non-executable section and the PE headers are marked as
+ * handled, so the relative-call/jump passes leave rewrite targets that
+ * live there alone.  The DLL also marks each data directory by RVA, but
+ * doing so regresses several real deltas, so that part is deliberately
+ * left out. */
+static void pa30_mark_nonexe(const unsigned char *buf, unsigned long len,
+                             unsigned char *mask)
+{
+    unsigned long pe, opt, nsec, sh, s, k;
+    if (len < 0x40) return;
+    pe = rd32(buf + 0x3C);
+    if (pe + 24 > len || memcmp(buf + pe, "PE\0\0", 4)) return;
+    opt = pe + 24;
+    if (rd16(buf + opt) != 0x10B || opt + 0x90 > len) return;
+    nsec = rd16(buf + pe + 6);
+    sh = opt + rd16(buf + pe + 20);
+    for (s = 0; s < nsec && sh + 40 * s + 40 <= len; ++s)
+    {
+        unsigned long o = sh + 40 * s;
+        unsigned long chars = rd32(buf + o + 36);
+        unsigned long raw = rd32(buf + o + 20);
+        unsigned long rs = rd32(buf + o + 16);
+        if (chars & 0x20000000UL) continue;      /* executable: leave alone */
+        if (raw >= len) continue;
+        if (rs > len - raw) rs = len - raw;
+        for (k = 0; k < rs; ++k)
+            mask[raw + k] |= 0x01U;
+    }
+    /* SizeOfHeaders is memset to 3 by the DLL. */
+    {
+        unsigned long hdr = rd32(buf + opt + 0x3C);
+        if (hdr > len) hdr = len;
+        for (k = 0; k < hdr; ++k)
+            mask[k] |= 0x03U;
+    }
 }
 
 /* Mirrors the DLL's RiftTransformRelocationsI386Component::
@@ -2816,11 +2800,15 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
                     qsort(t0, n0, sizeof(*t0), rift_cmp);
                 }
             }
-            if (n0 && rt && rn)
+            if (n0)
             {
                 RIFTENTRY sh;
                 unsigned k, w;
 
+                /* Build this even for empty rifts: rift_multiply treats a
+                 * missing table as identity, so the source PE section map
+                 * alone still yields the DLL's offset rift (needed by
+                 * deltas such as globalinstallorder.xml). */
                 n1 = rift_multiply(t0, n0, rt, rn, t1);
                 n2 = rift_multiply(t1, n1, tmp, tmpN, t2);
                 if (getenv("PA30_DEBUG"))
@@ -2965,6 +2953,7 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
                             {
                                 memset(hintBuf, 0x02, sourceLen);
                                 pa30_reloc_mask(prepared, sourceLen, hintBuf);
+                                pa30_mark_nonexe(prepared, sourceLen, hintBuf);
                                 if (getenv("PA30_HINTDUMP"))
                                 {
                                     FILE *hf = fopen(getenv("PA30_HINTDUMP"), "wb");
