@@ -30,6 +30,12 @@ class Dec(gdb.Breakpoint):
             return False
         inf = gdb.selected_inferior()
         p = g["srcp"]
+        inf0 = gdb.selected_inferior()
+        full = bytes(inf0.read_memory(p, 49544))
+        path = "C:/Users/Roy/AppData/Local/Temp/opencode/pa30harness/dllseed.bin"
+        with open(path, "wb") as fh:
+            fh.write(full)
+        gdb.write("dumped full seed to %s\n" % path)
         for off in (0x400, 0x450, 0x45C, 0x460, 0x7800):
             d = bytes(inf.read_memory(p + off, 48))
             gdb.write("SEED @%04X: %s\n" % (off, " ".join("%02X" % b for b in d)))

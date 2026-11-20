@@ -873,6 +873,7 @@ static int compo_decompress(BITR *br, const COMPFMT *fmt,
                 else
                     break;
             }
+
             if (sym.value == 0x54000UL)
             {
                 /* With an empty rift table the identity map applies to the
@@ -1627,11 +1628,18 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
                         prepared[lfa + 24 + 0x1D] = (unsigned char)((peImageBase >> 8) & 0xFF);
                         prepared[lfa + 24 + 0x1E] = (unsigned char)((peImageBase >> 16) & 0xFF);
                         prepared[lfa + 24 + 0x1F] = (unsigned char)((peImageBase >> 24) & 0xFF);
+                        /* NormalizeCoffImage zeroes the PE checksum. */
+                        memset(prepared + lfa + 24 + 0x40, 0, 4);
                         pa30_transform_pointers(prepared, sourceLen, rt, rn,
                             oldBase, (unsigned long)peImageBase,
                             sizeOfImage, sizeOfHeaders);
                     }
                     decompressSrc = prepared;
+                    if (getenv("PA30_SEEDDUMP"))
+                    {
+                        FILE *sf = fopen(getenv("PA30_SEEDDUMP"), "wb");
+                        if (sf) { fwrite(prepared, 1, (size_t)sourceLen, sf); fclose(sf); }
+                    }
                     if (getenv("PA30_DEBUG")) fprintf(stderr,
                         "PRE seedt patch TS at %08lX\n", lfa + 8);
                 }
