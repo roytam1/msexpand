@@ -1273,3 +1273,18 @@ Phase D is the genuine open-ended piece.
     negative-right entries (1056,-264672), (9456,-253200), (104312,-158344),
     which the DLL's main loop generates.  Default path unchanged at
     5858/307200; all regressions green.
+
+    **Multiply combination rule derived (part 43).**  Comparing t1
+    (`mulout4.bin`) with t2 (`mulout6.bin`) entry by entry reveals the main
+    rule: for each A entry `(l,r)`, Multiply emits `(B.Map(r), l)` — e.g.
+    t1 (1024,4096) -> t2 (1024,1024), t1 (1056,4176) -> t2 (1104,1056),
+    t1 (9408,86584) -> t2 (83512,9408), t1 (30208,278528) ->
+    t2 (273408,30208).  This is the inverse map, consistent with the later
+    Reverse step.  `msdelta_buildrift.gdb` shows two distinct Add sites for
+    t2 (`this=01063598`): caller 0x2F4F1/0x2F55C emits the normal
+    `(B.Map(r), l)` entries, while caller 0x2F164/0x2F1C0 emits the three
+    anomalous negative-right entries and the sentinels.  At 0x2F164 the
+    assembly computes `right = left - [var_3C:var_40]`, i.e. the anomalous
+    right values are A-derived lefts minus a running 64-bit offset — the
+    exact offset source is the last untraced piece.  Default stays
+    5858/307200 with all regressions green.
