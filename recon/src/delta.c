@@ -633,16 +633,26 @@ static int cf_read_symbol(COMPF *cf, BITR *br, SYMBOL *sym)
     if (k < 3)
     {
         if (k == 0)
+        {
             d = (long)br_read(br, 14) - 0x2000;
+        }
         else if (k == 1)
         {
-            long t = (long)br_read(br, 16) - 0x8000;
-            d = t < 0x8000 ? t + 0x2000 : t;
+            unsigned long t = br_read(br, 16);
+            /* DLL compares (unsigned)(t - 0x8000) >= 0x8000: a value below
+             * the bias underflows and takes the first branch. */
+            if ((unsigned long)(t - 0x8000UL) >= 0x8000UL)
+                d = (long)t - 40960;
+            else
+                d = (long)t - 0x8000 + 0x2000;
         }
         else
         {
-            long t = (long)br_read(br, 18) - 0x20000;
-            d = t >= 0x20000 ? t - 40960 : t + 40960;
+            unsigned long t = br_read(br, 18);
+            if ((unsigned long)(t - 0x20000UL) >= 0x20000UL)
+                d = (long)t - 172032;
+            else
+                d = (long)t - 0x20000 + 40960;
         }
         sym->value = (unsigned long)(d + 172032);   /* +0x2A000 */
     }
@@ -1197,6 +1207,23 @@ static int compo_decompress(BITR *br, const COMPFMT *fmt,
                 /* The match window is the source file followed by the
                  * bytes decoded so far, so a distance larger than `pos`
                  * reaches back into the source. */
+                if (getenv("PA30_SYMDBG") && pos == 83697)
+                {
+                    long ap = (long)pos - dist;
+                    fprintf(stderr,
+                        "MATCH83697 val=%lu len=%lu cpos=%ld off=%ld dist=%ld ap=%ld srcbytes=",
+                        sym.value, len, cpos, riftOff, dist, ap);
+                    {
+                        unsigned k;
+                        for (k = 0; k < 4; ++k)
+                        {
+                            long q = ap + (long)k;
+                            fprintf(stderr, "%02X ", q >= 0 ? out[q] :
+                                (srcLen + q < (long)srcLen ? src[srcLen + q] : 0));
+                        }
+                    }
+                    fprintf(stderr, "\n");
+                }
                 if (dist > (long)(pos + srcLen) ||
                     dist < -(long)srcLen)
                 {
