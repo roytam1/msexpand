@@ -885,6 +885,21 @@ static void pa30_transform_pointers(unsigned char *buf, unsigned long len,
     while (pos < end)
     {
         unsigned long v = rd32(buf + pos);
+        /* The DLL's hint map marks instruction operands as already handled;
+         * skip dwords immediately following common immediate-carrying x86
+         * opcodes so their operands are not mistaken for pointers. */
+        if (pos && getenv("PA30_SKIPIMM") &&
+            ((buf[pos - 1] >= 0xB8 && buf[pos - 1] <= 0xBF) ||
+             buf[pos - 1] == 0x68 || buf[pos - 1] == 0xE8 ||
+             buf[pos - 1] == 0xE9 || buf[pos - 1] == 0x05 ||
+             buf[pos - 1] == 0x0D || buf[pos - 1] == 0x15 ||
+             buf[pos - 1] == 0x1D || buf[pos - 1] == 0x25 ||
+             buf[pos - 1] == 0x2D || buf[pos - 1] == 0x35 ||
+             buf[pos - 1] == 0x3D))
+        {
+            ++pos;
+            continue;
+        }
         if (v >= oldBase && v < oldBase + sizeOfImage)
         {
             unsigned k;
@@ -2058,6 +2073,15 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
                     {
                         FILE *sf = fopen(getenv("PA30_SEEDDUMP"), "wb");
                         if (sf) { fwrite(prepared, 1, (size_t)sourceLen, sf); fclose(sf); }
+                    }
+                    if (getenv("PA30_SEEDONLY"))
+                    {
+                        free(orift);
+                        free(tmp);
+                        free(rt);
+                        free(pre); free(patch);
+                        *out = NULL; *outLen = 0;
+                        return 0;
                     }
                     if (getenv("PA30_DEBUG")) fprintf(stderr,
                         "PRE seedt patch TS at %08lX\n", lfa + 8);
