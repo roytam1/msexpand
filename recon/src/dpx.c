@@ -80,6 +80,37 @@ void DpxComputeTargetDir(char *buf, size_t bufSize)
     }
 }
 
+/* Last resort for a CAB folder our LZX decoder cannot handle (for example a
+ * very large 2 MB-window stream): ask the system expand.exe to unpack it.
+ * Only reached when native extraction has already failed. */
+static int CabExtractAllViaOS(const char *cabPath, const char *dir)
+{
+    char cmd[4096];
+    char sysdir[MAX_PATH];
+    char expand[MAX_PATH];
+    STARTUPINFOA si;
+    PROCESS_INFORMATION pi;
+    DWORD code = 1;
+
+    if (getenv("CAB_NO_OS")) return 0;
+    GetSystemDirectoryA(sysdir, sizeof(sysdir));
+    _snprintf(expand, sizeof(expand) - 1, "%s\\expand.exe", sysdir);
+    expand[sizeof(expand) - 1] = 0;
+    _snprintf(cmd, sizeof(cmd) - 1, "\"%s\" \"%s\" -F:* \"%s\"",
+              expand, cabPath, dir);
+    cmd[sizeof(cmd) - 1] = 0;
+    memset(&si, 0, sizeof(si));
+    si.cb = sizeof(si);
+    if (!CreateProcessA(NULL, cmd, NULL, NULL, FALSE, 0, NULL, NULL,
+                        &si, &pi))
+        return 0;
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    GetExitCodeProcess(pi.hProcess, &code);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    return code == 0;
+}
+
 /* A cabinet inside a cabinet is common in Windows Update packages: the MSU
  * holds a payload CAB which in turn holds CIX manifest and delta blobs. */
 static void DpxNestedCab(const char *cabPath, const char *targetDir)
@@ -123,6 +154,7 @@ static void DpxNestedCab(const char *cabPath, const char *targetDir)
         if (inner > 0)
         {
             int ok = 0;
+            int osFallback = 0;
             ProgressStage("Nested CAB", inner);
             for (j = 0; j < inner; ++j)
             {
@@ -139,8 +171,16 @@ static void DpxNestedCab(const char *cabPath, const char *targetDir)
                 r = CabExtractOne(full, name, to);
                 if (r == 1)
                     ++ok;
+                else if (!osFallback &&
+                         CabExtractAllViaOS(full, sub))
+                {
+                    printf("Nested CAB folder extracted by the OS fallback: %s\n",
+                           OnlyFileName(full));
+                    osFallback = 1;
+                    ++ok;
+                }
                 ProgressItem("Nested CAB", j + 1, inner, name,
-                             r == 1 ? "OK" : "FAIL");
+                             (r == 1 || osFallback) ? "OK" : "FAIL");
             }
             ProgressSummary("Nested CAB", ok, inner);
         }

@@ -117,15 +117,37 @@ int CixApplyCab(const char *cabPath, const char *outDir)
     if (!found)
         return 0;
 
-    GetTempPathA(MAX_PATH, tmpDir);
-    GetTempFileNameA(tmpDir, "cix", 0, manifestPath);
-    if (CabExtractOne(cabPath, entry, manifestPath) != 1 ||
-        ReadWhole(manifestPath, &text, &textLen) != 0)
+    /* When the CAB folder was unpacked by the OS fallback the manifest is
+     * already in the output directory; prefer that copy. */
     {
-        DeleteFileA(manifestPath);
-        return 0;
+        char local[MAX_PATH];
+        int fromTemp = 0;
+        JoinPath(local, sizeof(local), outDir, "_manifest_.cix.xml");
+        if (_access(local, 0) == 0)
+        {
+            strncpy(manifestPath, local, sizeof(manifestPath) - 1);
+            manifestPath[sizeof(manifestPath) - 1] = 0;
+        }
+        else
+        {
+            GetTempPathA(MAX_PATH, tmpDir);
+            GetTempFileNameA(tmpDir, "cix", 0, manifestPath);
+            fromTemp = 1;
+            if (CabExtractOne(cabPath, entry, manifestPath) != 1)
+            {
+                DeleteFileA(manifestPath);
+                return 0;
+            }
+        }
+        if (ReadWhole(manifestPath, &text, &textLen) != 0)
+        {
+            if (fromTemp)
+                DeleteFileA(manifestPath);
+            return 0;
+        }
+        if (fromTemp)
+            DeleteFileA(manifestPath);
     }
-    DeleteFileA(manifestPath);
 
     xml = XmlParse((const char *)text, textLen);
     free(text);

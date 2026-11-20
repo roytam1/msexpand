@@ -220,35 +220,6 @@ static void lzxAlign( LzxDecoder *d )
 	}
 }
 
-// Read one raw byte in stream order.  Uncompressed LZX blocks store bytes
-// verbatim, not as 16-bit words, so they must NOT go through lzxGetBits():
-// that reads the high byte of each little-endian word first and therefore
-// swaps every adjacent pair.
-static int lzxGetRawByte( LzxDecoder *d, unsigned int *out )
-{
-	if( d->bitcnt >= 8 ) {
-		*out = (d->bitbuf >> (d->bitcnt - 8)) & 0xFFu;
-		d->bitcnt -= 8;
-		d->bitbuf &= (1u<<d->bitcnt)-1;
-		return 1;
-	}
-	if( d->pendingValid ) {
-		*out = d->pendingByte;
-		d->pendingValid = 0;
-		return 1;
-	}
-	if( d->inPos >= d->inLen ) {
-		int got;
-		if( d->eof ) return 0;
-		got = d->fill( d->fillCtx, d->inBuf, LZX_INPUT_MAX );
-		if( got<=0 ) { d->eof = 1; return 0; }
-		d->inLen = (unsigned long)got;
-		d->inPos = 0;
-	}
-	*out = d->inBuf[d->inPos++];
-	return 1;
-}
-
 // ------------------------------------------------------------------
 // The Huffman trees.
 // ------------------------------------------------------------------
@@ -512,7 +483,7 @@ static int lzxReadBlockHeader( LzxDecoder *d )
 		// and the three offsets that were used last are stored too
 		for( i=0; i<12; i++ ) {
 			unsigned int byte;
-			if( !lzxGetRawByte( d, &byte ) ) return 0;
+			if( !lzxGetBits( d, 8, &byte ) ) return 0;
 			if( i==0 ) d->R0 = 0;
 			if( i==4 ) d->R1 = 0;
 			if( i==8 ) d->R2 = 0;
@@ -592,8 +563,8 @@ static int lzxDecodeFrame( LzxDecoder *d, unsigned long frameSize )
 			// a block that was stored as it is and had an odd
 			// length is followed by a whole padding byte that is dropped
 			if( (d->blockType==LZX_BLOCK_UNCOMPRESSED) && (d->blockLength & 1) ) {
-				unsigned int pad;
-				if( !lzxGetRawByte( d, &pad ) ) return 0;
+				unsigned int bit;
+				if( !lzxGetBit( d, &bit ) ) return 0;
 			}
 			if( !lzxReadBlockHeader( d ) ) return 0;
 		}
@@ -688,7 +659,7 @@ static int lzxDecodeFrame( LzxDecoder *d, unsigned long frameSize )
 			if( (posn+n) > d->windowSize ) return 0;
 			while( n>0 ) {
 				unsigned int byte;
-				if( !lzxGetRawByte( d, &byte ) ) return 0;
+				if( !lzxGetBits( d, 8, &byte ) ) return 0;
 				window[posn++] = (unsigned char)byte;
 				n--;
 			}
