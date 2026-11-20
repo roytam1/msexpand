@@ -1391,3 +1391,17 @@ Phase D is the genuine open-ended piece.
     Result: our computed seed is now byte-identical to the DLL's (0/49544
     differing), and blob 1 decodes with **0/307200 wrong bytes** with no
     external seed.  blob 0, d0, d1, PA19, XPRESS, LZX and LZMS remain exact.
+
+    **Full MSU verification (part 48).**  Extracted
+    `windows8.1-kb2959977-x86_...msu` both ways and checked all 513 CIX
+    manifest targets against their declared SHA256 and length:
+
+      - default (OS `msdelta.dll` delegation): **513 OK, 0 bad, 0 missing**.
+      - `PA30_NO_OS=1` (native only): **334 OK, 3 bad, 176 missing**.
+
+    The three bad native targets are `wucltux.dll`, `wuaueng.dll` and
+    `storewuauth.dll` (correct lengths, wrong hashes); all 176 missing ones
+    are PA30 targets whose `DeltaApply` fails outright.  So blob 1 being
+    byte-exact does **not** generalise to every delta in this MSU: there are
+    further format variants in the native decoder.  Keep OS delegation as
+    the default for MSU extraction.
