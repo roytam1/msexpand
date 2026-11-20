@@ -152,11 +152,20 @@ static int if_build(INTFORMAT *f)
     for (i = 0; i < IF_NUM_SYMS; ++i)
         ++f->count[f->len[i]];
     f->count[0] = 0;
-    left = 0;
-    for (len = 1; len <= 16; ++len)
+    /* The DLL's statichuffman::Codes::CalculateCodes computes first codes
+     * top-down: first[maxLen]=0, first[L]=(first[L+1]+count[L+1])>>1.  This
+     * is NOT the textbook bottom-up recurrence; it assigns e.g. first[2]=2,
+     * first[3]=1 for a 2/3-bit tree. */
     {
-        left = (left + (int)f->count[len - 1]) << 1;
-        f->first[len] = (unsigned short)left;
+        unsigned maxLen = 0;
+        for (len = 1; len <= 16; ++len)
+            if (f->count[len]) maxLen = len;
+        left = 0;
+        for (len = maxLen; len >= 1; --len)
+        {
+            f->first[len] = (unsigned short)left;
+            left = (left + (int)f->count[len]) >> 1;
+        }
     }
     index = 0;
     for (i = 0; i < IF_NUM_SYMS; ++i)
@@ -176,20 +185,21 @@ static int if_build(INTFORMAT *f)
 static unsigned if_decode(const INTFORMAT *f, BITR *br)
 {
     unsigned code = 0;
-    unsigned first = 0;
     unsigned index = 0;
-    unsigned len, countv;
-    /* Huffman code bits are consumed MSB-first from the 32-bit window. */
+    unsigned len;
+    /* Huffman code bits are consumed MSB-first from the 32-bit window.
+     * The first[] table comes from if_build()'s top-down recurrence (the
+     * DLL's statichuffman::Codes::CalculateCodes), not the textbook one. */
     for (len = 1; len <= 16; ++len)
     {
-        /* Decode peeks; if_read_number() consumes the code bits. */
-        code = (code << 1) | br_bit(br, len - 1);
-        countv = f->count[len];
-        if (code - countv < first)
-            return f->sym[index + (code - first)];
-        index += countv;
-        first += countv;
-        first <<= 1;
+        code = (code << 1) | br_bit(br, len - 1);   /* peek, no consume */
+        if (f->count[len] && code >= f->first[len] &&
+            code - f->first[len] < f->count[len])
+        {
+            unsigned si = index + (code - f->first[len]);
+            return f->sym[si];
+        }
+        index += f->count[len];
     }
     return 0;
 }
@@ -199,6 +209,8 @@ static __int64 if_read_number(INTFORMAT *f, BITR *br)
     unsigned s = if_decode(f, br);
     unsigned neg;
     __int64 v;
+    if (getenv("PA30_IFDBG")) fprintf(stderr,
+        "  IFNUM s=%u len=%u bitpos=%lu\n", s, f->len[s], br->bitpos);
     br_skip(br, f->len[s]);
     neg = (s >= 126);
     if (neg)
@@ -239,6 +251,15 @@ static int if_read(INTFORMAT *f, BITR *br)
     base = (unsigned char)(br_read(br, 4) + 1);
     if (base > 16)
         return -1;
+    if (getenv("PA30_IFDBG"))
+    {
+        unsigned j;
+        fprintf(stderr, "IFREAD n1=%u n2=%u run=%u base=%u lens:",
+                n1, n2, run, base);
+        for (j = 0; j < IF_NUM_SYMS; ++j)
+            if (f->len[j] <= 3) fprintf(stderr, " [%u]=%u", j, f->len[j]);
+        fprintf(stderr, "\n");
+    }
     for (i = n1; i < 126; ++i)
     {
         if (run-- == 0)
@@ -256,6 +277,14 @@ static int if_read(INTFORMAT *f, BITR *br)
             run = 126u - i;
         }
         f->len[126 + i] = base;
+    }
+    if (getenv("PA30_IFDBG"))
+    {
+        unsigned j;
+        fprintf(stderr, "IFBUILT lens:");
+        for (j = 0; j < IF_NUM_SYMS; ++j)
+            if (f->len[j] <= 3) fprintf(stderr, " [%u]=%u", j, f->len[j]);
+        fprintf(stderr, "\n");
     }
     return if_build(f);
 }
@@ -699,6 +728,17 @@ static void e8_untranslate(unsigned char *out, unsigned long outLen)
 }
 
 /* ---------- Decompress ---------------------------------------------------- */
+static void compo_partial_dump(const unsigned char *out, unsigned long pos)
+{
+    const char *p = getenv("PA30_PARTIAL");
+    FILE *f;
+    if (!p) return;
+    f = fopen(p, "wb");
+    if (!f) return;
+    if (pos) fwrite(out, 1, (size_t)pos, f);
+    fclose(f);
+}
+
 static int compo_decompress(BITR *br, const COMPFMT *fmt,
                             const unsigned char *src, unsigned long srcLen,
                             const RIFTENTRY *rift, unsigned riftN,
@@ -738,9 +778,17 @@ static int compo_decompress(BITR *br, const COMPFMT *fmt,
 
         rc = cf_read_symbol(&cf, br, &sym);
         if (rc != 0)
+        {
+            if (getenv("PA30_DEBUG")) fprintf(stderr,
+                "DECOMP fail: pos=%lu seg=%u symval=%lu len=%lu bitpos=%lu\n",
+                pos, segIndex, sym.value, sym.length, br->bitpos);
             return -1;
+        }
 
 
+        if (getenv("PA30_SYMDBG") && pos < 512)
+            fprintf(stderr, "SYM pos=%lu val=%lu len=%lu bitpos=%lu\n",
+                    pos, sym.value, sym.length, br->bitpos);
         if (sym.length == 1)
         {
             out[pos++] = (unsigned char)sym.value;
@@ -751,13 +799,16 @@ static int compo_decompress(BITR *br, const COMPFMT *fmt,
             long dist = 0;
             long riftOff = 0;
             unsigned ri;
+            /* Entries are sorted by `left` and map target interval
+             * [left, next_left) to source position `left + rift` = right,
+             * i.e. source = target + (right-left).  Pick the nearest entry
+             * with left <= pos. */
             for (ri = 0; ri < riftN; ++ri)
             {
-                if ((unsigned long)rift[ri].right >= pos)
-                {
+                if ((unsigned long)rift[ri].left <= pos)
                     riftOff = (long)(rift[ri].right - rift[ri].left);
+                else
                     break;
-                }
             }
             if (sym.value == 0x54000UL)
             {
@@ -768,7 +819,12 @@ static int compo_decompress(BITR *br, const COMPFMT *fmt,
                 unsigned long j;
                 dist = -riftOff;
                 if (sp < 0 || (unsigned long)(sp + (long)len) > srcLen + pos)
+                {
+                    if (getenv("PA30_DEBUG")) fprintf(stderr,
+                        "DECOMP riftfail: pos=%lu sp=%ld len=%lu riftOff=%ld bitpos=%lu\n",
+                        pos, sp, len, riftOff, br->bitpos);
                     return -1;
+                }
                 if (len > outLen - pos)
                     len = outLen - pos;
                 for (j = 0; j < len; ++j)
@@ -805,7 +861,13 @@ static int compo_decompress(BITR *br, const COMPFMT *fmt,
                  * reaches back into the source. */
                 if (dist == 0 || dist > (long)(pos + srcLen) ||
                     dist < -(long)srcLen)
+                {
+                    if (getenv("PA30_DEBUG")) fprintf(stderr,
+                        "DECOMP distfail: pos=%lu symval=%lu dist=%ld len=%lu bitpos=%lu\n",
+                        pos, sym.value, dist, len, br->bitpos);
+                    compo_partial_dump(out, pos);
                     return -1;
+                }
                 if (len > outLen - pos)
                     len = outLen - pos;
                 for (i = 0; i < len; ++i)
@@ -1431,8 +1493,19 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
         }
 
         br_init(&pbr, patch, patchLen);
-        if (!rt && rc == 0)
-            rc = rift_read(&pbr, &rt, &rn);
+        /* The patch blob begins with its own RiftTable.  Always consume it so
+         * the CompositeFormat reader starts at the right bit, but keep the
+         * compression map recovered from the pre blob as the active rift. */
+        if (rc == 0)
+        {
+            RIFTENTRY *prt = NULL;
+            unsigned prn = 0;
+            if (rift_read(&pbr, &prt, &prn) == 0)
+            {
+                if (!rt) { rt = prt; rn = prn; }
+                else free(prt);
+            }
+        }
         if (getenv("PA30_DEBUG")) fprintf(stderr,
             "PATCH rift n=%u rc=%d at bit %lu\n", rn, rc, pbr.bitpos);
         if (rc == 0)

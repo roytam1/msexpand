@@ -1029,3 +1029,34 @@ Phase D is the genuine open-ended piece.
     or (b) a signature/code search in the system DLL to relocate the reader
     functions.  `diag/msdelta_trace.gdb` and `diag/msdelta_apply.gdb` are kept
     as the reusable starting point.  No tracked source changed this round.
+
+    **Compo port, part 30 (gdb oracle delivered the root cause).**  With the
+    decompilation regenerated from the *current system* `msdelta.dll`, the gdb
+    scripts worked directly: `msdelta_trace.gdb` logged the real reader entry
+    points and `msdelta_rn.gdb` dumped every `IntFormat::ReadNumber` value,
+    `msdelta_lens.gdb` the Huffman length/code tables.  Findings and fixes:
+
+      - The real DLL's first RIFT table entries are `(left,rift)` =
+        `(0,0),(4096,-3072),(278528,-5120),...` — PE RVA -> file-offset maps.
+        Our decoder produced `-2^32` garbage.  Root cause: `if_decode()` used
+        the textbook bottom-up canonical first-code recurrence, while the
+        DLL's `statichuffman::Codes::CalculateCodes` computes first codes
+        **top-down** (`first[maxLen]=0; first[L]=(first[L+1]+count[L+1])>>1`),
+        giving e.g. first[2]=2, first[3]=1 (dumped `codes[]` confirms this).
+        `if_build()`/`if_decode()` now use the DLL recurrence.  A second bug,
+        `code - count < first` false-matching when count==0, was also fixed
+        (`code >= first && code - first < count`).
+      - The pre-blob's compression RIFT map (88 entries) now decodes with
+        exactly the same bit positions as the DLL: first RIFT ends at relative
+        bit 459, CliMetadata flag at 460, compression map starts at 461.
+      - The patch blob's own leading RiftTable must still be consumed before
+        `CompositeFormat`; it is now skipped without replacing the pre-blob
+        map.  CompositeFormat then parses correctly (5 segments).
+
+    The decoder now runs to output position ~1084 with 67/1084 wrong bytes;
+    the remaining defect is the RIFT distance mapping for long-distance
+    matches (our entry-selection/distance formula is still heuristic).  The
+    first real delta (blob 0), generated vectors, PA19, XPRESS, LZX and LZMS
+    all remain byte-exact.  `PA30_DEBUG`, `PA30_SYMDBG`, `PA30_PARTIAL` guard
+    the new tracing.  Next step: use `msdelta_rn.gdb` at a failing match to
+    recover the exact RIFT-adjusted distance formula.
