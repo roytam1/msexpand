@@ -1229,7 +1229,7 @@ static void pa30_reloc_mask(const unsigned char *buf, unsigned long len,
         unsigned long rsz = rd32(buf + opt + 0x60 + 2 * 8 + 4);
         unsigned long nsec = rd16(buf + pe + 6);
         unsigned long sh = opt + rd16(buf + pe + 20);
-        unsigned long s;
+        unsigned long s, k;
         if (rr && rsz)
             for (s = 0; s < nsec && sh + 40 * s + 40 <= len; ++s)
             {
@@ -1243,7 +1243,8 @@ static void pa30_reloc_mask(const unsigned char *buf, unsigned long len,
                     unsigned long n = rs;
                     if (n > len - raw) n = len - raw;
                     if (raw < len)
-                        memset(mask + raw, 0x01, (size_t)n);
+                        for (k = 0; k < n; ++k)
+                            mask[raw + k] |= 0x01U;
                     break;
                 }
             }
@@ -1544,9 +1545,10 @@ static void pa30_transform_relcalls(unsigned char *buf, unsigned long len,
             long rel, newrel, siteRVA, targetRVA, mappedSite, mappedTarget;
             unsigned long to;
             if (buf[p] != 0xE8) continue;
-            /* Skip a 0xE8 that is actually the disp8 of 8B/8D 45 xx. */
-            if (p >= raw + 2 && (buf[p - 2] == 0x8B || buf[p - 2] == 0x8D) &&
-                buf[p - 1] == 0x45)
+            /* Skip an opcode byte that is really a ModRM disp8
+             * (mod=01, rm=101), e.g. 8B/8D 45|55 E8. */
+            if (p >= raw + 2 && (buf[p - 1] & 0xC7) == 0x45 &&
+                (buf[p - 2] & 0xC0) != 0xC0)
                 continue;
             if (hint && (hint[p] | hint[p + 1] | hint[p + 2] |
                          hint[p + 3] | hint[p + 4]) & 0x01)
@@ -1658,11 +1660,11 @@ static void pa30_transform_reljmps(unsigned char *buf, unsigned long len,
         {
             long rel, newrel, siteRVA, targetRVA, mappedSite, mappedTarget;
             unsigned long to, opLen = 5, hintAt = p;
-            /* Skip bytes that are really a ModRM disp8 of a [EBP+disp8]
-             * instruction (8B/8D 45 xx); the byte scan otherwise mistakes
-             * the displacement 0xE8/0xE9 for an opcode. */
-            if (p >= raw + 2 && (buf[p - 2] == 0x8B || buf[p - 2] == 0x8D) &&
-                buf[p - 1] == 0x45)
+            /* Skip bytes that are really a ModRM disp8 (mod=01, rm=101);
+             * the byte scan otherwise mistakes the displacement for an
+             * opcode. */
+            if (p >= raw + 2 && (buf[p - 1] & 0xC7) == 0x45 &&
+                (buf[p - 2] & 0xC0) != 0xC0)
                 continue;
             if (buf[p] == 0x0F && p + 6 <= span &&
                 (buf[p + 1] & 0xF0) == 0x80)
