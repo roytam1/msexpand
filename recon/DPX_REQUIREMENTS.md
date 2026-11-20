@@ -1247,3 +1247,17 @@ Phase D is the genuine open-ended piece.
     A faithful port must replace our simplified `rift_multiply` wholesale
     with the decompiled main-loop arithmetic — the sentinel alone is not
     sufficient.  Default remains 5858/307200 wrong with all regressions green.
+
+    **Main-loop port attempted (part 41).**  Translated the decompiled main
+    loop (`msdelta.dll.c:24088-24151`) with explicit 32-bit half-word
+    arithmetic (GetRift upper bound, carry/borrow tracking, nested entry
+    generation), gated by PA30_MULLOOP.  It produces 483 ORIFT entries that
+    share none of the DLL's 77 (the critical `(153856,-158344)` is absent),
+    so the translation is not faithful — the decompiler's reuse of `v45`,
+    `v49[0]` and `v41` across the half-word comparisons makes a mechanical
+    port unreliable without instruction-level tracing of each intermediate.
+    Reverted to the simplified composition by default; blob 1 stays at
+    5858/307200 with all regressions green.  Closing this needs either a
+    debugger-driven line-by-line semantic reconstruction of the Multiply
+    loop, or a from-scratch derivation of its interval-extension rule from
+    the dumped intermediate tables (`msdelta_mulout.gdb`).

@@ -886,47 +886,94 @@ static unsigned rift_multiply(const RIFTENTRY *a, unsigned an,
                               const RIFTENTRY *b, unsigned bn,
                               RIFTENTRY *out)
 {
-    unsigned on = 0, i, j, k;
-    __int64 x;
+    unsigned on = 0, j;
     if (!an) { if (bn) memcpy(out, b, (size_t)bn * sizeof(*out)); return bn; }
     if (!bn) { memcpy(out, a, (size_t)an * sizeof(*out)); return an; }
-    out[on].left = INT64_MIN;
-    out[on].right = rift_map(b, bn, rift_map(a, an, INT64_MIN));
-    ++on;
-    if (getenv("PA30_SENTINEL"))
-        on = rift_multiply_sentinel(a, an, b, bn, out, on);
-    for (i = 0; i < an; ++i)
+    if (!getenv("PA30_MULLOOP"))
     {
-        out[on].left = a[i].left;
-        out[on].right = rift_map(b, bn, rift_map(a, an, a[i].left));
+        /* legacy simplified composition */
+        unsigned i, k;
+        __int64 x;
+        out[on].left = INT64_MIN;
+        out[on].right = rift_map(b, bn, rift_map(a, an, INT64_MIN));
         ++on;
-    }
-    for (j = 0; j < bn; ++j)
-    {
-        /* preimage of b[j].left under A, for each A interval */
-        for (k = 0; k < an; ++k)
+        for (i = 0; i < an; ++i)
         {
-            __int64 lo = a[k].left;
-            __int64 hi = (k + 1 < an) ? a[k + 1].left : INT64_MAX;
-            __int64 rift = a[k].right - a[k].left;
-            x = b[j].left - rift;
-            if (x >= lo && x < hi)
+            out[on].left = a[i].left;
+            out[on].right = rift_map(b, bn, rift_map(a, an, a[i].left));
+            ++on;
+        }
+        for (j = 0; j < bn; ++j)
+            for (k = 0; k < an; ++k)
             {
-                out[on].left = x;
-                out[on].right = rift_map(b, bn, rift_map(a, an, x));
+                __int64 lo = a[k].left;
+                __int64 hi = (k + 1 < an) ? a[k + 1].left : INT64_MAX;
+                __int64 rift = a[k].right - a[k].left;
+                x = b[j].left - rift;
+                if (x >= lo && x < hi)
+                {
+                    out[on].left = x;
+                    out[on].right = rift_map(b, bn, rift_map(a, an, x));
+                    ++on;
+                }
+            }
+    }
+    else
+    {
+        /* Faithful translation of RiftTable::Multiply's main loop using
+         * explicit 32-bit half-word arithmetic. */
+        for (j = 0; j < an; ++j)
+        {
+            __int64 aLeft = a[j].left;
+            __int64 aRight = a[j].right;
+            __int64 end = (j + 1 < an) ? aRight - 1 : INT64_MAX;
+            __int64 p = aRight, v41;
+            unsigned rift;
+            unsigned loP, hiP, carry, v33, v34, v35hi, v47, v37;
+            if (j + 1 < an && aRight == aLeft) continue;
+            rift = (unsigned)rift_get_rift(b, bn, p, &v41);
+            out[on].left = aLeft;
+            out[on].right = p + rift;
+            ++on;
+            loP = (unsigned)p;
+            hiP = (unsigned)(p >> 32);
+            carry = ((unsigned)v41 < loP) ? 1u : 0u;
+            v33 = (unsigned)v41 - loP;
+            v34 = (unsigned)aLeft;
+            v35hi = (unsigned)(aLeft >> 32);
+            v47 = (unsigned)(v41 >> 32) - (carry + hiP);
+            while ((unsigned __int64)(end - aLeft) >
+                   (unsigned __int64)(((__int64)v47 << 32) | v33))
+            {
+                unsigned v50 = v33 + 1u + v34;
+                __int64 tmp = (((__int64)v47 << 32) | v33) + 1 +
+                              (((__int64)v35hi << 32) | v34);
+                unsigned v49hi = (unsigned)(tmp >> 32);
+                __int64 v38 = v41 + 1;
+                v37 = (unsigned)(v38 >> 32);
+                rift = (unsigned)rift_get_rift(b, bn, v38, &v41);
+                out[on].left = ((__int64)v49hi << 32) | v50;
+                out[on].right = v38 + rift;
                 ++on;
+                carry = ((unsigned)v41 < (unsigned)v38) ? 1u : 0u;
+                v33 = (unsigned)v41 - (unsigned)v38;
+                v34 = v50;
+                v35hi = v49hi;
+                v47 = (unsigned)(v41 >> 32) - (carry + v37);
             }
         }
     }
     qsort(out, on, sizeof(*out), rift_cmp);
-    /* collapse duplicate lefts */
-    k = 0;
-    for (i = 1; i < on; ++i)
     {
-        if (out[i].left == out[k].left) out[k].right = out[i].right;
-        else out[++k] = out[i];
+        unsigned i, k = 0;
+        for (i = 1; i < on; ++i)
+        {
+            if (out[i].left == out[k].left) out[k].right = out[i].right;
+            else out[++k] = out[i];
+        }
+        on = k + 1;
     }
-    return k + 1;
+    return on;
 }
 
 static unsigned long pa30_map_rva(const RIFTENTRY *rt, unsigned rn,
@@ -2053,7 +2100,7 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
                 {
                     unsigned q;
                     fprintf(stderr, "ORIFT n=%u\n", n3);
-                    for (q = 0; q < n3 && q < 200; ++q)
+                    for (q = 0; q < n3 && q < 1000; ++q)
                         fprintf(stderr, "  or[%u] %I64d -> %I64d\n",
                                 q, t3[q].left, t3[q].right);
                 }
