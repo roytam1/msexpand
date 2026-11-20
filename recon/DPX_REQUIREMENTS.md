@@ -1128,3 +1128,21 @@ Phase D is the genuine open-ended piece.
     our seed byte *equals* the DLL's, so the remaining error is RIFT match
     source positioning, not the seed transform.  Blob 0, generated vectors,
     PA19, XPRESS, LZX and LZMS remain byte-exact.
+
+    **RIFT match source = OffsetRiftTable (part 34).**  `msdelta_riftpos.gdb`
+    logs the argument to `BufferList::GetCharsConst` at the 0x54000 copy and
+    `msdelta_offsetrift.gdb` / `msdelta_orift_init.gdb` dump the tables.  The
+    DLL does NOT use `pos + rift` directly: it builds an `OffsetRiftTable`
+    from a 77-entry RiftTable whose entries are already in combined-buffer
+    coordinates, e.g. `(left,right)` = `(49544,0), (50600,-264672),
+    (50648,1056), (59000,-253200), ...`.  `OffsetRiftTable::Init` turns each
+    into `(left, right-left)`, giving `[0]=(0,-298888), (49544,-49544),
+    (50600,-315272), (50648,-49592), ...`; a rift match at combined position
+    P uses `src = P + off` of the entry with the largest `left <= P` and is
+    limited by the next entry's `left`.  Ground truth: output 0..1034 read
+    `src = out` (off -49544), output >=1116 reads `src = out-48` (off
+    -49592).  Our decoder currently uses `src = pos` for all rift matches,
+    which explains the divergence starting at output 1116 despite an exact
+    seed.  The remaining task is to derive that 77-entry RiftTable from the
+    pre-blob / delta inputs (it is not the 88-entry compression map) and use
+    it for rift matches.
