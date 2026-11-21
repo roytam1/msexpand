@@ -1347,6 +1347,7 @@ static void pa30_transform_pointers(unsigned char *buf, unsigned long len,
 static int pa30_x64_decode(const unsigned char *start,
                            const unsigned char *end, int *ripOff)
 {
+    /* ripOff is also used for a rel32 branch operand (E8/E9/0F8x). */
     const unsigned char *p = start;
     int opsz16 = 0, rexw = 0;
     int hasModrm = 0, imm = 0;
@@ -1377,7 +1378,11 @@ static int pa30_x64_decode(const unsigned char *start,
         unsigned op2;
         if (p >= end) return 0;
         op2 = *p++;
-        if (op2 >= 0x80 && op2 <= 0x8F) imm = opsz16 ? 2 : 4;
+        if (op2 >= 0x80 && op2 <= 0x8F)
+        {
+            *ripOff = (int)(p - start);
+            imm = opsz16 ? 2 : 4;
+        }
         else if (op2 == 0x38 || op2 == 0x3A)
         {
             /* Three-byte opcode maps: 0F 38 <op> /r, 0F 3A <op> /r ib. */
@@ -1486,7 +1491,11 @@ static int pa30_x64_decode(const unsigned char *start,
             break;
         case 0x05: case 0x0D: case 0x15: case 0x1D:
         case 0x25: case 0x2D: case 0x35: case 0x3D:
-        case 0x68: case 0xA9: case 0xE8: case 0xE9:
+        case 0x68: case 0xA9:
+            imm = opsz16 ? 2 : 4;
+            break;
+        case 0xE8: case 0xE9:
+            *ripOff = (int)(p - start);
             imm = opsz16 ? 2 : 4;
             break;
         case 0xB0: case 0xB1: case 0xB2: case 0xB3:
@@ -1581,7 +1590,8 @@ static void pa30_transform_amd64_rip(unsigned char *buf, unsigned long len,
         {
             int rip = -1;
             int step;
-            if (hint && (hint[p] & 0x01)) { ++p; continue; }
+            if (hint && (hint[p] & 0x01))
+            { ++p; continue; }
             step = pa30_x64_decode(buf + p, buf + limit, &rip);
             if (step <= 0) { ++p; continue; }
             if (rip >= 0 && p + (unsigned long)rip + 4 <= limit)
@@ -1592,25 +1602,21 @@ static void pa30_transform_amd64_rip(unsigned char *buf, unsigned long len,
                 rel = (long)rd32(buf + f);
                 siteRVA = (long)(begin + (f - start) + 4);
                 targetRVA = siteRVA + rel;
-                if (targetRVA >= 0 &&
-                    (unsigned long)targetRVA < sizeOfImage &&
-                    !(hint && (hint[f] | hint[f + 1] |
+                /* The DLL does not range-check the target: MapRva is applied
+                 * to whatever value the operand holds. */
+                if (!(hint && (hint[f] | hint[f + 1] |
                                hint[f + 2] | hint[f + 3]) & 0x01))
                 {
-                    to = pa30_rva_off(buf, len, (unsigned long)targetRVA);
-                    if (!(to != 0xFFFFFFFFUL && to >= len))
+                    mappedSite = (long)pa30_map_rva(rt, rn,
+                                                    (unsigned long)siteRVA);
+                    mappedTarget = (long)pa30_map_rva(rt, rn,
+                                               (unsigned long)targetRVA);
+                    newrel = mappedTarget - mappedSite;
+                    if (newrel != rel)
                     {
-                        mappedSite = (long)pa30_map_rva(rt, rn,
-                                                        (unsigned long)siteRVA);
-                        mappedTarget = (long)pa30_map_rva(rt, rn,
-                                                   (unsigned long)targetRVA);
-                        newrel = mappedTarget - mappedSite;
-                        if (newrel != rel)
-                        {
-                            pa30_set_u32(buf, f, (unsigned long)newrel);
-                            if (hint)
-                                memset((void *)(hint + f), 0x01, 4);
-                        }
+                        pa30_set_u32(buf, f, (unsigned long)newrel);
+                        if (hint)
+                            memset((void *)(hint + f), 0x01, 4);
                     }
                 }
             }
