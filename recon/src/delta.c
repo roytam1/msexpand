@@ -1378,6 +1378,10 @@ static int pa30_x64_decode(const unsigned char *start,
         unsigned op2;
         if (p >= end) return 0;
         op2 = *p++;
+        /* The DLL's table has no entry for the multi-byte NOP, so it treats
+         * the 0F prefix itself as a one-byte instruction. */
+        if (op2 == 0x1F)
+            return (int)(p - 1 - start);
         if (op2 >= 0x80 && op2 <= 0x8F)
         {
             *ripOff = (int)(p - start);
