@@ -1365,7 +1365,9 @@ static int pa30_x64_decode(const unsigned char *start,
             c == 0x64 || c == 0x65) { ++p; continue; }
         break;
     }
-    if (p < end && (*p & 0xF0) == 0x40)
+    /* The DLL's table only knows 48-4F as a REX prefix; 40-47 are plain
+     * one-byte opcodes to it. */
+    if (p < end && *p >= 0x48 && *p <= 0x4F)
     {
         rexw = (*p & 0x08) != 0;
         ++p;
@@ -1378,10 +1380,11 @@ static int pa30_x64_decode(const unsigned char *start,
         unsigned op2;
         if (p >= end) return 0;
         op2 = *p++;
-        /* The DLL's table has no entry for the multi-byte NOP, so it treats
-         * the 0F prefix itself as a one-byte instruction. */
+        /* The DLL's table gives the multi-byte NOP a length of two bytes
+         * (0F and 1F), leaving the displacement bytes to be decoded as
+         * fresh instructions. */
         if (op2 == 0x1F)
-            return (int)(p - 1 - start);
+            return (int)(p - start);
         if (op2 >= 0x80 && op2 <= 0x8F)
         {
             *ripOff = (int)(p - start);
@@ -1425,18 +1428,6 @@ static int pa30_x64_decode(const unsigned char *start,
                 break;
             }
         }
-    }
-    else if (op == 0xC4 || op == 0xC5 || op == 0x62)
-    {
-        int n = (op == 0xC5) ? 1 : (op == 0xC4) ? 2 : 3;
-        while (n-- > 0)
-        {
-            if (p >= end) return 0;
-            ++p;
-        }
-        if (p >= end) return 0;
-        ++p;
-        hasModrm = 1;
     }
     else
     {
@@ -1689,7 +1680,8 @@ static void pa30_mark_import_section(unsigned char *buf, unsigned long len)
         if (imp >= va && imp < va + (vs ? vs : rs))
         {
             ch = rd32(buf + o + 36);
-            if (!(ch & 0x80000000UL))
+            /* The DLL only makes the section writable for PE32 images. */
+            if (rd16(buf + opt) != 0x20B && !(ch & 0x80000000UL))
             {
                 ch |= 0x80000000UL;
                 buf[o + 36] = (unsigned char)(ch & 0xFF);
@@ -1765,14 +1757,18 @@ static void pa30_rewrite_imports(unsigned char *buf, unsigned long len,
         {
             unsigned long t = k ? ft : oft;
             unsigned long to = t ? pa30_rva_off(buf, len, t) : 0xFFFFFFFFUL;
+            unsigned long width = (rd16(buf + opt) == 0x20B) ? 8 : 4;
             unsigned i;
             if (to == 0xFFFFFFFFUL) continue;
-            for (i = 0; i < 4096 && to + 4 * (i + 1) <= len; ++i)
+            for (i = 0; i < 4096 && to + width * (i + 1) <= len; ++i)
             {
-                unsigned long v = rd32(buf + to + 4 * i);
-                if (!v) break;
-                if (!(v & 0x80000000UL))
-                    pa30_set_u32(buf, to + 4 * i,
+                unsigned long at = to + width * i;
+                unsigned long v = rd32(buf + at);
+                unsigned long hi = (width == 8) ? rd32(buf + at + 4) : 0;
+                if (!v && !hi) break;
+                if (hi & 0x80000000UL) continue;    /* ordinal import */
+                if (v && !(v & 0x80000000UL))
+                    pa30_set_u32(buf, at,
                                  pa30_map_rva(rt, rn, (long)v));
             }
         }
