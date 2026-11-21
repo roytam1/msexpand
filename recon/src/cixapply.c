@@ -8,6 +8,7 @@
 #include "cix.h"
 #include "delta.h"
 #include "cixapply.h"
+#include <time.h>
 
 static int ReadWhole(const char *path, unsigned char **out, unsigned long *len)
 {
@@ -179,6 +180,9 @@ int CixApplyCab(const char *cabPath, const char *outDir)
         for (i = 0, f = cix.files; f; f = f->next, ++i)
         {
             int rc;
+            double t0 = 0;
+            if (getenv("PA30_TIMING"))
+                t0 = (double)clock() / CLOCKS_PER_SEC;
             if (done[i])
                 continue;
 
@@ -248,6 +252,9 @@ int CixApplyCab(const char *cabPath, const char *outDir)
                     continue;
             }
             done[i] = 1;
+            if (getenv("PA30_TIMING") && i < 40)
+                fprintf(stderr, "TIMING %u %s %.3f\n", i, f->name,
+                        (double)clock() / CLOCKS_PER_SEC - t0);
             ProgressItem("Patching", i + 1, cix.count, f->name, "OK");
             ++progress;
             ++produced;

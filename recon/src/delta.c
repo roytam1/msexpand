@@ -1,3 +1,4 @@
+#include <time.h>
 /* delta.c -- PA30 / PA19 delta blob application (C89). */
 #include "expand.h"
 #include "delta.h"
@@ -3584,6 +3585,25 @@ static void compo_partial_dump(const unsigned char *out, unsigned long pos)
     fclose(f);
 }
 
+/* Index of the last entry with left <= x, or ~0u if there is none.  The
+ * decompressor's rift lookup used to scan the whole table for every match;
+ * CLI deltas grow that table from a handful of entries to nearly a thousand,
+ * so use a binary search (the DLL's OffsetRiftTable does the same). */
+static unsigned rift_find_index(const RIFTENTRY *rift, unsigned n, __int64 x)
+{
+    unsigned lo, hi, mid;
+    if (!n || rift[0].left > x) return 0xFFFFFFFFU;
+    lo = 0;
+    hi = n - 1;
+    while (lo < hi)
+    {
+        mid = (lo + hi + 1) >> 1;
+        if (rift[mid].left <= x) lo = mid;
+        else hi = mid - 1;
+    }
+    return lo;
+}
+
 static int compo_decompress(BITR *br, const COMPFMT *fmt,
                             const unsigned char *src, unsigned long srcLen,
                             const RIFTENTRY *rift, unsigned riftN,
@@ -3652,28 +3672,25 @@ static int compo_decompress(BITR *br, const COMPFMT *fmt,
             long riftOff = 0;
             long cpos;
             long riftLimit = 0;
-            unsigned ri;
+            unsigned ri, riFound;
             /* The DLL's OffsetRiftTable is keyed by the COMBINED position
              * (srcLen + output position), mapping it to a combined source
              * position.  Pick the entry with the largest left <= cpos. */
             cpos = (long)pos + (long)srcLen;
             /* An empty table means the implicit identity rift: the combined
              * position maps back to the output position (off = -srcLen). */
-            riftOff = -(long)srcLen;
-            for (ri = 0; ri < riftN; ++ri)
-            {
-                if (rift[ri].left <= cpos)
-                    riftOff = (long)(rift[ri].right - rift[ri].left);
-                else
-                    break;
-            }
+            riFound = rift_find_index(rift, riftN, cpos);
+            ri = (riFound == 0xFFFFFFFFU) ? 0 : riFound + 1;
+            riftOff = (riFound == 0xFFFFFFFFU)
+                        ? -(long)srcLen
+                        : (long)(rift[riFound].right - rift[riFound].left);
             if (sym.value == 0x54000UL && ri < riftN)
                 riftLimit = (long)(rift[ri].left - cpos);
 
             if (sym.value == 0x54000UL)
             {
                 unsigned long done = 0;
-                unsigned curi;
+                unsigned curi, ci;
                 long curOff;
 
                 /* InternalProcess stores -rift into the distance history on
@@ -3693,14 +3710,11 @@ static int compo_decompress(BITR *br, const COMPFMT *fmt,
                     long cpos2 = (long)pos + (long)srcLen + (long)done;
                     long limit, sp;
 
-                    curOff = -(long)srcLen;
-                    for (curi = 0; curi < riftN; ++curi)
-                    {
-                        if (rift[curi].left <= cpos2)
-                            curOff = (long)(rift[curi].right - rift[curi].left);
-                        else
-                            break;
-                    }
+                    ci = rift_find_index(rift, riftN, cpos2);
+                    curi = (ci == 0xFFFFFFFFU) ? 0 : ci + 1;
+                    curOff = (ci == 0xFFFFFFFFU)
+                            ? -(long)srcLen
+                            : (long)(rift[ci].right - rift[ci].left);
                     limit = (curi < riftN) ? rift[curi].left - cpos2 : -1;
                     if (limit > 0 && limit < (long)chunk)
                         chunk = (unsigned long)limit;
@@ -4328,6 +4342,11 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
     unsigned char *patch;
     unsigned char *result;
     int rc;
+    double tPhase = 0, tStart = 0;
+    int doPhase = getenv("PA30_PHASE") != NULL;
+    if (doPhase) tStart = (double)clock() / CLOCKS_PER_SEC;
+#define PHASE(tag) if (doPhase) { double t = (double)clock()/CLOCKS_PER_SEC; \
+    fprintf(stderr, "PHASE %s %.3f\n", tag, t - tPhase); tPhase = t; }
 
     *out = NULL;
     *outLen = 0;
@@ -4535,10 +4554,17 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
             }
         }
 
-        cli_meta_from_pe(&cliSrc, source, sourceLen);
-        cli_meta_derive(&cliSrc);
-        cli_meta_derive(&cliTgt);
+        PHASE("pre");
+        /* CLI work is only needed when the target pre blob actually carries
+         * CLI metadata; skip the PE metadata parse and derivation otherwise. */
+        if (!cliTgt.empty)
+        {
+            cli_meta_from_pe(&cliSrc, source, sourceLen);
+            cli_meta_derive(&cliSrc);
+            cli_meta_derive(&cliTgt);
+        }
 
+        PHASE("derive");
         /* Fold in the rift the CLI map induces.  The DLL builds
          * compressionRiftTable3 = Sum(compressionRiftTable2, cliMapCompression)
          * before the decompressor consumes it; the CLI entries are the finer
@@ -4643,6 +4669,7 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
             rc = compfmt_read(&cf, &pbr);
         if (getenv("PA30_DEBUG")) fprintf(stderr,
             "COMPFMT nSeg=%u rc=%d at bit %lu\n", cf.nSeg, rc, pbr.bitpos);
+        PHASE("orift");
         if (rc == 0 && sourceLen >= 0x40)
         {
             unsigned long lfa = rd32(source + 0x3C);
@@ -4716,12 +4743,12 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
                                 CLIBLOBSET blobs;
                                 memset(&blobs, 0, sizeof(blobs));
                                 if (getenv("PA30_DEBUG")) fprintf(stderr, "SEED cli shared\n");
-                                pa30_transform_pointers(prepared, sourceLen, rt, rn,
-                                    oldBase, peImageBase,
-                                    sizeOfImage, sizeOfHeaders, hintBuf);
+                                PHASE("cli-pre-start");
                                 pa30_transform_relocs(prepared, sourceLen, rt, rn,
                                     oldBase, peImageBase, sizeOfImage);
+                                PHASE("cli-relocs");
                                 pa30_transform_resources(prepared, sourceLen, rt, rn);
+                                PHASE("cli-resources");
                                 pa30_mark_import_section(prepared, sourceLen);
                                 if (getenv("PA30_BLIND"))
                                     pa30_transform_rvas(prepared, sourceLen, rt, rn,
@@ -4729,9 +4756,11 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
                                 else
                                     pa30_rewrite_imports(prepared, sourceLen, rt, rn);
                                 pa30_transform_exports(prepared, sourceLen, rt, rn);
+                                PHASE("cli-imports-exports");
                                 if (getenv("PA30_DEBUG")) fprintf(stderr, "SEED cli disasm\n");
                                 pa30_transform_cli_disasm(prepared, sourceLen,
                                                           &cliSrc, &cliMap);
+                                PHASE("cli-disasm");
                                 if (getenv("PA30_DEBUG")) fprintf(stderr, "SEED cli metadata\n");
                                 pa30_transform_cli_metadata(prepared, sourceLen,
                                                             &cliSrc, &cliTgt,
@@ -4740,6 +4769,7 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
                                 pa30_transform_cli_blobs(prepared, sourceLen,
                                                          &cliSrc, &cliMap,
                                                          &blobs);
+                                PHASE("cli-blobs");
                             }
                             else
                             {
@@ -4820,6 +4850,7 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
                 }
             }
         }
+        PHASE("seed");
         if (rc == 0)
         {
             result = (unsigned char *)malloc(h.targetSize);
@@ -4835,6 +4866,7 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
                 result = NULL;
             }
         }
+        PHASE("decomp");
         if (decompressSrc != source) free((void *)decompressSrc);
         cli_map_free(&cliMap);
         free(tmp);
