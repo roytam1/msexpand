@@ -776,6 +776,7 @@ static void e8_untranslate(unsigned char *out, unsigned long outLen)
 static unsigned long rd32(const unsigned char *p);
 static unsigned __int64 rd64(const unsigned char *p);
 static unsigned short rd16(const unsigned char *p);
+static void pa30_set_u32(unsigned char *b, unsigned long off, unsigned long v);
 
 /* ---------- PA30 PE seed transform ---------------------------------------- */
 /* RiftTable::Map: add the rift of the nearest entry whose left <= rva. */
@@ -1340,6 +1341,124 @@ static void pa30_transform_pointers(unsigned char *buf, unsigned long len,
     free(hint);
 }
 
+/* RiftTransformDisasmAmd64: rewrite RIP-relative displacements in x64 code
+ * so they still point at the same section after the rebase.  We recognise
+ * the common ModRM=00/rm=101 encodings instead of running a full decoder. */
+static int pa30_amd64_modrm_ok(const unsigned char *buf, unsigned long p,
+                               unsigned long raw)
+{
+    unsigned char op;
+    if (p < raw + 1) return 0;
+    op = buf[p - 1];
+    if (op >= 0x40 && op <= 0x4F && p >= raw + 2)
+        op = buf[p - 2];              /* REX prefix before the opcode */
+    switch (op)
+    {
+    case 0x01: case 0x03: case 0x09: case 0x0B: case 0x11: case 0x13:
+    case 0x19: case 0x1B: case 0x21: case 0x23: case 0x29: case 0x2B:
+    case 0x31: case 0x33: case 0x38: case 0x39: case 0x3B: case 0x85:
+    case 0x87: case 0x8A: case 0x8B: case 0x88: case 0x89: case 0x8D:
+    case 0x83: case 0xC6: case 0xC7: case 0xD0: case 0xD1: case 0xD2:
+    case 0xD3: case 0xF6: case 0xF7: case 0xFE: case 0xFF:
+        return 1;
+    case 0x0F:
+        /* Two-byte opcode: accept when a REX prefix or a second opcode byte
+         * is present, as in 48 0F 43 0D (cmov). */
+        return (buf[p - 2] >= 0x40 && buf[p - 2] <= 0x4F) ||
+               (p >= raw + 2 && buf[p - 2] != 0x0F);
+    }
+    return 0;
+}
+
+static void pa30_transform_amd64_rip(unsigned char *buf, unsigned long len,
+                                     const RIFTENTRY *rt, unsigned rn,
+                                     unsigned long sizeOfImage,
+                                     const unsigned char *hint)
+{
+    unsigned long pe, opt, sh, nsec, s;
+    if (len < 0x40) return;
+    pe = rd32(buf + 0x3C);
+    if (pe + 24 > len || memcmp(buf + pe, "PE\0\0", 4)) return;
+    opt = pe + 24;
+    if (rd16(buf + opt) != 0x20B) return;   /* x64 only */
+    nsec = rd16(buf + pe + 6);
+    sh = opt + rd16(buf + pe + 20);
+    for (s = 0; s < nsec && sh + 40 * s + 40 <= len; ++s)
+    {
+        unsigned long o = sh + 40 * s;
+        unsigned long flags = rd32(buf + o + 36);
+        unsigned long vs = rd32(buf + o + 8);
+        unsigned long rs = rd32(buf + o + 16);
+        unsigned long raw = rd32(buf + o + 20);
+        unsigned long va = rd32(buf + o + 12);
+        unsigned long span, p;
+        if (!(flags & 0x20000000UL)) continue;
+        if (vs > rs) vs = rs;
+        if (vs < 8 || raw + vs > len) continue;
+        span = raw + vs;
+        for (p = raw + 1; p + 4 < span; ++p)
+        {
+            long rel, siteRVA, targetRVA, mappedSite, mappedTarget, newrel;
+            unsigned long to;
+            if ((buf[p] & 0xC7) != 0x05) continue;    /* mod=00, rm=101 */
+            if (!pa30_amd64_modrm_ok(buf, p, raw)) continue;
+            if (hint && (hint[p + 1] | hint[p + 2] |
+                         hint[p + 3] | hint[p + 4]) & 0x01) continue;
+            rel = (long)rd32(buf + p + 1);
+            siteRVA = (long)(va + (p - raw) + 5);
+            targetRVA = siteRVA + rel;
+            if (targetRVA < 0 || (unsigned long)targetRVA >= sizeOfImage)
+                continue;
+            to = pa30_rva_off(buf, len, (unsigned long)targetRVA);
+            if (to != 0xFFFFFFFFUL && to >= len) continue;
+            mappedSite = (long)pa30_map_rva(rt, rn, (unsigned long)siteRVA);
+            mappedTarget = (long)pa30_map_rva(rt, rn,
+                                              (unsigned long)targetRVA);
+            newrel = mappedTarget - mappedSite;
+            if (newrel != rel)
+            {
+                pa30_set_u32(buf, p + 1, (unsigned long)newrel);
+                if (hint)
+                    memset((void *)(hint + p + 1), 0x01, 4);
+            }
+            p += 4;
+        }
+    }
+}
+
+/* RiftTransformPdataAmd64: .pdata holds 12-byte RUNTIME_FUNCTION records
+ * whose three dwords are RVAs into the image. */
+static void pa30_transform_pdata_amd64(unsigned char *buf, unsigned long len,
+                                       const RIFTENTRY *rt, unsigned rn,
+                                       unsigned long sizeOfImage)
+{
+    unsigned long pe, opt, dd, er, es, off, end;
+    if (len < 0x40) return;
+    pe = rd32(buf + 0x3C);
+    if (pe + 24 > len || memcmp(buf + pe, "PE\0\0", 4)) return;
+    opt = pe + 24;
+    if (rd16(buf + opt) != 0x20B) return;
+    dd = PA30_DD(buf, opt);
+    if (dd + 4 * 8 > len) return;
+    er = rd32(buf + dd + 3 * 8);        /* Exception Table */
+    es = rd32(buf + dd + 3 * 8 + 4);
+    if (!er || es < 12) return;
+    off = pa30_rva_off(buf, len, er);
+    if (off == 0xFFFFFFFFUL || es > len - off) return;
+    end = off + es - 12;
+    for (; off <= end; off += 12)
+    {
+        unsigned k;
+        for (k = 0; k < 3; ++k)
+        {
+            unsigned long v = rd32(buf + off + 4 * k);
+            if (!v || v >= sizeOfImage) continue;
+            pa30_set_u32(buf, off + 4 * k,
+                         (unsigned long)pa30_map_rva(rt, rn, (long)v));
+        }
+    }
+}
+
 /* MarkNonExe: the DLL adds IMAGE_SCN_MEM_WRITE to the section that holds
  * the import directory, so the rewritten import RVAs can be stored. */
 static void pa30_mark_import_section(unsigned char *buf, unsigned long len)
@@ -1862,13 +1981,25 @@ static void pa30_transform_relocs(unsigned char *buf, unsigned long len,
              * relocation site itself (msdelta.dll.c:35375). */
             {
                 unsigned long fo = pa30_rva_off(buf, len, page + roff);
-                if (fo != 0xFFFFFFFFUL && fo + 4 <= len)
+                unsigned long width = (type == 10) ? 8 : 4;
+                if (fo != 0xFFFFFFFFUL && fo + width <= len)
                 {
-                    unsigned long v = rd32(buf + fo);
+                    unsigned __int64 v = (type == 10) ? rd64(buf + fo) :
+                                                       rd32(buf + fo);
                     if (v >= oldBase && v < oldBase + sizeOfImage)
-                        pa30_set_u32(buf, fo, (unsigned long)
-                            ((unsigned __int64)pa30_map_rva(rt, rn,
-                                (unsigned long)(v - oldBase)) + newBase));
+                    {
+                        unsigned __int64 nv =
+                            (unsigned __int64)pa30_map_rva(rt, rn,
+                                (unsigned long)(v - oldBase)) + newBase;
+                        if (type == 10)
+                        {
+                            unsigned k;
+                            for (k = 0; k < 8; ++k)
+                                buf[fo + k] = (unsigned char)(nv >> (8 * k));
+                        }
+                        else
+                            pa30_set_u32(buf, fo, (unsigned long)nv);
+                    }
                 }
             }
             rel[n].rva = (unsigned long)pa30_map_rva(rt, rn,
@@ -3002,6 +3133,12 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
                             pa30_transform_pointers(prepared, sourceLen, rt, rn,
                                 oldBase, peImageBase,
                                 sizeOfImage, sizeOfHeaders, hintBuf);
+                            if (getenv("PA30_DEBUG")) fprintf(stderr, "SEED amd64 rip\n");
+                            pa30_transform_amd64_rip(prepared, sourceLen, rt, rn,
+                                                     sizeOfImage, hintBuf);
+                            if (getenv("PA30_DEBUG")) fprintf(stderr, "SEED pdata\n");
+                            pa30_transform_pdata_amd64(prepared, sourceLen, rt, rn,
+                                                       sizeOfImage);
                             if (getenv("PA30_DEBUG")) fprintf(stderr, "SEED relocs\n");
                             pa30_transform_relocs(prepared, sourceLen, rt, rn,
                                 oldBase, peImageBase,
