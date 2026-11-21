@@ -1549,40 +1549,48 @@ static void pa30_transform_amd64_rip(unsigned char *buf, unsigned long len,
                                      unsigned long sizeOfImage,
                                      const unsigned char *hint)
 {
-    unsigned long pe, opt, sh, nsec, s;
+    unsigned long pe, opt, dd, er, es, n, entry;
     if (len < 0x40) return;
     pe = rd32(buf + 0x3C);
     if (pe + 24 > len || memcmp(buf + pe, "PE\0\0", 4)) return;
     opt = pe + 24;
     if (rd16(buf + opt) != 0x20B) return;   /* x64 only */
-    nsec = rd16(buf + pe + 6);
-    sh = opt + rd16(buf + pe + 20);
-    for (s = 0; s < nsec && sh + 40 * s + 40 <= len; ++s)
+    dd = PA30_DD(buf, opt);
+    if (dd + 4 * 8 > len) return;
+    er = rd32(buf + dd + 3 * 8);            /* Exception Table (.pdata) */
+    es = rd32(buf + dd + 3 * 8 + 4);
+    if (!er || es < 12) return;
+
+    /* The DLL walks each RUNTIME_FUNCTION range rather than sweeping .text,
+     * so dead code and embedded data are never decoded. */
+    n = es / 12;
+    for (entry = 0; entry < n; ++entry)
     {
-        unsigned long o = sh + 40 * s;
-        unsigned long flags = rd32(buf + o + 36);
-        unsigned long vs = rd32(buf + o + 8);
-        unsigned long rs = rd32(buf + o + 16);
-        unsigned long raw = rd32(buf + o + 20);
-        unsigned long va = rd32(buf + o + 12);
-        unsigned long span, p;
-        if (!(flags & 0x20000000UL)) continue;
-        if (vs > rs) vs = rs;
-        if (vs < 8 || raw + vs > len) continue;
-        span = raw + vs;
-        p = raw;
-        while (p < span)
+        unsigned long eoff = pa30_rva_off(buf, len, er + entry * 12);
+        unsigned long begin, end, start, limit, p;
+        if (eoff == 0xFFFFFFFFUL || eoff + 12 > len) continue;
+        begin = rd32(buf + eoff);
+        end = rd32(buf + eoff + 4);
+        if (!begin || end <= begin) continue;
+        start = pa30_rva_off(buf, len, begin);
+        if (start == 0xFFFFFFFFUL || start >= len) continue;
+        limit = start + (end - begin);
+        if (limit > len) limit = len;
+        p = start;
+        while (p < limit)
         {
             int rip = -1;
-            int n = pa30_x64_decode(buf + p, buf + span, &rip);
-            if (n <= 0) { ++p; continue; }
-            if (rip >= 0 && p + (unsigned long)rip + 4 <= span)
+            int step;
+            if (hint && (hint[p] & 0x01)) { ++p; continue; }
+            step = pa30_x64_decode(buf + p, buf + limit, &rip);
+            if (step <= 0) { ++p; continue; }
+            if (rip >= 0 && p + (unsigned long)rip + 4 <= limit)
             {
                 unsigned long f = p + (unsigned long)rip;
                 long rel, siteRVA, targetRVA, mappedSite, mappedTarget, newrel;
                 unsigned long to;
                 rel = (long)rd32(buf + f);
-                siteRVA = (long)(va + (f - raw) + 4);
+                siteRVA = (long)(begin + (f - start) + 4);
                 targetRVA = siteRVA + rel;
                 if (targetRVA >= 0 &&
                     (unsigned long)targetRVA < sizeOfImage &&
@@ -1606,7 +1614,7 @@ static void pa30_transform_amd64_rip(unsigned char *buf, unsigned long len,
                     }
                 }
             }
-            p += (unsigned long)n;
+            p += (unsigned long)step;
         }
     }
 }
