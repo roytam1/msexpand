@@ -1378,6 +1378,20 @@ static int pa30_x64_decode(const unsigned char *start,
         if (p >= end) return 0;
         op2 = *p++;
         if (op2 >= 0x80 && op2 <= 0x8F) imm = opsz16 ? 2 : 4;
+        else if (op2 == 0x38 || op2 == 0x3A)
+        {
+            /* Three-byte opcode maps: 0F 38 <op> /r, 0F 3A <op> /r ib. */
+            if (p >= end) return 0;
+            ++p;
+            hasModrm = 1;
+            if (op2 == 0x3A) imm = 1;
+        }
+        else if (op2 == 0x0F)
+        {
+            /* 3DNow!: 0F 0F /r ib */
+            hasModrm = 1;
+            imm = 1;
+        }
         else
         {
             switch (op2)
