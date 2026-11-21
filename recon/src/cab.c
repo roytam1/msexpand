@@ -8,6 +8,13 @@
 #include "expand.h"
 #include "lzx.h"
 
+/* The bit buffer is preloaded per CFDATA block with LzxDecodeBlock(). */
+static int CabLzxFill(void *ctx, unsigned char *buf, unsigned long want)
+{
+    (void)ctx; (void)buf; (void)want;
+    return 0;
+}
+
 /* ------------------------------------------------------------------ */
 /* A small raw-DEFLATE (inflate) implementation.                        */
 /* ------------------------------------------------------------------ */
@@ -519,34 +526,26 @@ static int CabDecompressFolder(CAB *cab, int folderIndex,
     coff = folder->coffCabStart;
     count = 0;
 
-    /* An LZX folder is one continuous stream: the CFDATA blocks only chop
-     * it into transport units.  Huffman trees, repeat offsets and the E8
-     * translation state all carry across block boundaries, so the payloads
-     * must be concatenated and decoded in a single pass. */
+    /* FDI feeds the LZX decoder one CFDATA payload at a time and resets its
+     * bit buffer for each one; only the Huffman trees, repeated offsets and
+     * window contents carry over.  Concatenating the payloads and decoding
+     * them as one stream desyncs on large folders. */
     if ((folder->typeCompress & 0x000F) == 3)
     {
-        unsigned char *comp;
-        unsigned long compLen = 0;
         unsigned long total = 0;
         unsigned long c = coff;
-        unsigned long w = 0;
+        unsigned long outpos = 0;
         int windowBits;
         int blocks = 0;
+        LzxDecoder *ld;
 
-        /* Only this folder's CFDATA blocks belong to the stream.  Walking
-         * to the end of the cabinet would swallow the next folder's data:
-         * an uncompressed 32768-byte CFDATA block is not "> 0x8000", so the
-         * guard below would not stop it. */
         while (c + 8 <= cab->cbCabinet && blocks < (int)folder->cCFData)
         {
             const unsigned char *p = cab->data + c;
             unsigned short cbData = Rd16(p + 4);
             unsigned short cbUncomp = Rd16(p + 6);
-            if (c + 8 + cbData > cab->cbCabinet)
+            if (c + 8 + cbData > cab->cbCabinet || cbUncomp > 0x8000UL)
                 break;
-            if (cbUncomp > 0x8000UL)
-                break;
-            compLen += cbData;
             total += cbUncomp;
             c += 8 + (unsigned long)cbData;
             ++blocks;
@@ -554,14 +553,14 @@ static int CabDecompressFolder(CAB *cab, int folderIndex,
         windowBits = (folder->typeCompress >> 8) & 0x1F;
         if (windowBits < 15 || windowBits > 25)
             windowBits = 15;
-        if (!compLen || total != size)
+        if (!total || total != size)
         {
             free(buf);
             free(window);
             return -1;
         }
-        comp = (unsigned char *)malloc((size_t)compLen);
-        if (!comp)
+        ld = LzxCreate(windowBits, size, CabLzxFill, NULL);
+        if (!ld)
         {
             free(buf);
             free(window);
@@ -569,29 +568,33 @@ static int CabDecompressFolder(CAB *cab, int folderIndex,
         }
         c = coff;
         blocks = 0;
-        while (c + 8 <= cab->cbCabinet && w < compLen &&
-               blocks < (int)folder->cCFData)
+        while (c + 8 <= cab->cbCabinet && blocks < (int)folder->cCFData)
         {
             const unsigned char *p = cab->data + c;
             unsigned short cbData = Rd16(p + 4);
-            if (c + 8 + cbData > cab->cbCabinet)
+            unsigned short cbUncomp = Rd16(p + 6);
+            if (c + 8 + cbData > cab->cbCabinet || cbUncomp > 0x8000UL)
                 break;
-            if (w + cbData > compLen)
-                break;
-            memcpy(comp + w, p + 8, (size_t)cbData);
-            w += cbData;
+            if (cbUncomp > size - outpos ||
+                LzxDecodeBlock(ld, buf + outpos, cbUncomp,
+                               p + 8, cbData) != 1)
+            {
+                LzxDestroy(ld);
+                free(buf);
+                free(window);
+                return -1;
+            }
+            outpos += cbUncomp;
             c += 8 + (unsigned long)cbData;
             ++blocks;
         }
-        if (w != compLen ||
-            LzxRawDecompress(comp, compLen, buf, size, windowBits) != 0)
+        LzxDestroy(ld);
+        if (outpos != size)
         {
-            free(comp);
             free(buf);
             free(window);
             return -1;
         }
-        free(comp);
         free(window);
         z.outLen = size;
         *outData = buf;
@@ -687,6 +690,34 @@ int CabList(const char *path)
     return 0;
 }
 
+/* A large CAB folder can take seconds to decode and callers extract many
+ * files from the same folder, so keep the most recently decoded one. */
+static char g_folderCachePath[MAX_PATH];
+static int g_folderCacheIndex = -1;
+static unsigned char *g_folderCacheData;
+static unsigned long g_folderCacheLen;
+
+static int CabCachedFolder(CAB *cab, const char *cabPath, int folderIndex,
+                           unsigned char **out, unsigned long *len)
+{
+    if (g_folderCacheData && folderIndex == g_folderCacheIndex &&
+        !strcmp(cabPath, g_folderCachePath))
+    {
+        *out = g_folderCacheData;
+        *len = g_folderCacheLen;
+        return 1;
+    }
+    if (CabDecompressFolder(cab, folderIndex, out, len) != 1)
+        return 0;
+    free(g_folderCacheData);
+    g_folderCacheData = *out;
+    g_folderCacheLen = *len;
+    g_folderCacheIndex = folderIndex;
+    strncpy(g_folderCachePath, cabPath, sizeof(g_folderCachePath) - 1);
+    g_folderCachePath[sizeof(g_folderCachePath) - 1] = 0;
+    return 1;
+}
+
 int CabExtractOne(const char *cabPath, const char *entryName,
                   const char *targetPath)
 {
@@ -710,8 +741,8 @@ int CabExtractOne(const char *cabPath, const char *entryName,
         {
             unsigned char *folderData;
             unsigned long folderSize;
-            int fr = CabDecompressFolder(&cab, cab.files[i].iFolder,
-                                         &folderData, &folderSize);
+            int fr = CabCachedFolder(&cab, cabPath, cab.files[i].iFolder,
+                                     &folderData, &folderSize);
             HFILE hOut;
             UINT written;
             if (fr != 1)
@@ -721,14 +752,12 @@ int CabExtractOne(const char *cabPath, const char *entryName,
             }
             if (cab.files[i].uoffFolderStart + cab.files[i].cbFile > folderSize)
             {
-                free(folderData);
                 result = -3;
                 break;
             }
             hOut = _lcreat(targetPath, 0);
             if (hOut == -1)
             {
-                free(folderData);
                 result = -2;
                 break;
             }
@@ -736,7 +765,6 @@ int CabExtractOne(const char *cabPath, const char *entryName,
                 (LPSTR)(folderData + cab.files[i].uoffFolderStart),
                 (UINT)cab.files[i].cbFile);
             _lclose(hOut);
-            free(folderData);
             if (written == (UINT)-1)
                 result = -4;
             else if ((int)written != (int)cab.files[i].cbFile)

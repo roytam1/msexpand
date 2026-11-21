@@ -532,9 +532,9 @@ typedef struct tagCOMPFMT
 {
     unsigned nSeg;
     unsigned defaultFormat;
-    unsigned boundary[32];
+    unsigned boundary[128];
     unsigned char metaLen[39];
-    unsigned char lens[32][872];
+    unsigned char lens[128][872];
 } COMPFMT;
 
 static int compfmt_read(COMPFMT *f, BITR *br)
@@ -553,7 +553,7 @@ static int compfmt_read(COMPFMT *f, BITR *br)
         return 0;                   /* default format */
     }
     f->nSeg = br_read_int(br);
-    if (f->nSeg == 0 || f->nSeg > 32)
+    if (f->nSeg == 0 || f->nSeg > 128)
         return -1;
     /* Boundaries are cumulative endpoints in the combined [source][output]
      * buffer, encoded as successive deltas.  The first delta is the source
