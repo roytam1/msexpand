@@ -1178,6 +1178,1051 @@ static unsigned rift_multiply(const RIFTENTRY *a, unsigned an,
     return on;
 }
 
+/* ---------- CLI metadata and the compression rift it induces ------------
+ * .NET deltas carry the target's CliMetadata fields (row counts and heap
+ * offsets) plus a CliMap in the pre buffer.  Replaying the DLL's
+ * CompressionRiftTableFromCliMap turns those into extra
+ * (target offset -> source offset) rift entries for the metadata heaps and
+ * tables, which the decompressor needs for 0x54000 matches inside .NET
+ * assemblies.  The table schema below is the DLL's static CLI schema
+ * (msdelta.dll: dword_10011DD8 / dword_10014E50 / dword_10014E54). */
+
+#define CLI_MAX_COLS 16
+
+typedef struct tagCLIMETA
+{
+    unsigned d3, d4, d5;            /* metadata offset, length, spare */
+    unsigned nStream;               /* number of metadata streams */
+    unsigned strmTable;             /* start of the stream table */
+    unsigned stringsOff, stringsLen;
+    unsigned usOff, usLen;
+    unsigned blobOff, blobLen;
+    unsigned guidOff, guidLen;
+    unsigned tablesOff, tablesLen;
+    unsigned char heapSizes;
+    unsigned __int64 mask;
+    unsigned rows[64];
+    unsigned toff[64];              /* absolute table data offset */
+    unsigned stride[64];            /* bytes per row */
+    unsigned char is4[64][CLI_MAX_COLS];
+    unsigned char coff[64][CLI_MAX_COLS];
+    int empty;
+} CLIMETA;
+
+typedef struct tagCLIMAP
+{
+    RIFTENTRY *heap[4];
+    unsigned heapN[4];
+    RIFTENTRY *tbl[64];
+    unsigned tblN[64];
+} CLIMAP;
+
+static const unsigned char g_cliNCols[64] = {
+    5, 3, 6, 1, 3, 1, 6, 1, 3, 2, 3, 3, 3, 2, 3, 3,
+    2, 1, 2, 1, 3, 2, 1, 3, 3, 3, 1, 1, 4, 2, 2, 1,
+    9, 1, 3, 9, 2, 4, 3, 5, 4, 2, 5, 2, 2, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+};
+
+static const unsigned char g_cliColType[64][16] = {
+    { 0, 3, 5, 5, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 7, 3, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 1, 3, 3, 7, 6, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 0, 3, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 2, 0, 0, 3, 4, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 6, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 7, 3, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 0, 7, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 7, 7, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 7, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 0, 7, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 0, 1, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 1, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 6, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 0, 3, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 6, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 0, 3, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 0, 6, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 6, 7, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 0, 7, 3, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 2, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 1, 0, 0, 0, 0, 1, 4, 3, 3, 0, 0, 0, 0, 0, 0, 0 },
+    { 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 0, 0, 0, 0, 1, 4, 3, 3, 4, 0, 0, 0, 0, 0, 0, 0 },
+    { 1, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 1, 1, 1, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 1, 3, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 1, 1, 3, 3, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 1, 1, 3, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 6, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 0, 0, 7, 3, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 7, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 6, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+};
+
+static const unsigned char g_cliColIdx[64][16] = {
+    { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 11, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 0, 0, 0, 0, 4, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 0, 0, 0, 0, 1, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 5, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 2, 10, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 3, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 0, 4, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 9, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 2, 20, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 20, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 2, 23, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 23, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 0, 6, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 2, 7, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 0, 8, 0, 26, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 0, 0, 0, 0, 0, 0, 10, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 0, 0, 0, 0, 0, 11, 0, 0, 12, 0, 0, 0, 0, 0, 0, 0 },
+    { 0, 35, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 0, 0, 0, 35, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 0, 0, 12, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 0, 0, 0, 0, 9, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 0, 0, 0, 9, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 2, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 0, 0, 12, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 42, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+};
+
+static const unsigned char g_cliCodedBits[13] = { 2, 2, 5, 1, 2, 3, 1, 1, 1, 2, 3, 2, 1 };
+static const unsigned char g_cliCodedCount[13] = { 3, 3, 22, 2, 3, 5, 2, 2, 2, 3, 5, 4, 2 };
+
+static const unsigned char g_cliCodedMem[13][22] = {
+    { 2, 1, 27, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 4, 8, 23, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 6, 4, 1, 2, 8, 9, 10, 0, 14, 23, 20, 17, 26, 27, 32, 35, 38, 39, 40, 42, 44, 43 },
+    { 4, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 2, 6, 32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 2, 1, 26, 6, 27, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 20, 23, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 6, 10, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 4, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 38, 35, 39, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 64, 64, 6, 10, 64, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 0, 26, 35, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 2, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+};
+
+static unsigned cli_popcount64(unsigned __int64 v)
+{
+    unsigned n = 0;
+    while (v) { v &= v - 1; ++n; }
+    return n;
+}
+
+/* Recompute the derived table layout (CliMetadata::InitDependent). */
+static void cli_meta_derive(CLIMETA *m)
+{
+    unsigned codedMax[13];
+    unsigned t, c, i;
+
+    for (i = 0; i < 13; ++i)
+    {
+        unsigned mx = 0, k;
+        for (k = 0; k < g_cliCodedCount[i]; ++k)
+        {
+            unsigned idx = g_cliCodedMem[i][k];
+            if (idx < 64 && m->rows[idx] > mx) mx = m->rows[idx];
+        }
+        codedMax[i] = mx;
+    }
+    memset(m->toff, 0, sizeof(m->toff));
+    memset(m->stride, 0, sizeof(m->stride));
+    memset(m->is4, 0, sizeof(m->is4));
+    memset(m->coff, 0, sizeof(m->coff));
+    for (t = 0; t < 64; ++t)
+    {
+        unsigned s = 0;
+        if (!m->rows[t]) continue;
+        for (c = 0; c < g_cliNCols[t]; ++c)
+        {
+            unsigned ty = g_cliColType[t][c];
+            unsigned ix = g_cliColIdx[t][c];
+            unsigned is4 = 0;
+            switch (ty)
+            {
+            case 0:  is4 = 0; break;
+            case 1:  case 2: is4 = 1; break;
+            case 3:  is4 = (m->heapSizes & 1) != 0; break;
+            case 4:  is4 = (m->heapSizes & 4) != 0; break;
+            case 5:  is4 = (m->heapSizes & 2) != 0; break;
+            case 6:  is4 = (ix < 64 && m->rows[ix] >= 0x10000UL); break;
+            case 7:  is4 = (ix < 13 && codedMax[ix] >= (0x10000UL >> g_cliCodedBits[ix])); break;
+            default: is4 = 0; break;
+            }
+            m->coff[t][c] = (unsigned char)s;
+            m->is4[t][c] = (unsigned char)is4;
+            s += 2 + 2 * is4;
+        }
+        m->stride[t] = s;
+    }
+    {
+        unsigned v28 = 24 + 4 * cli_popcount64(m->mask);
+        for (t = 0; t < 64; ++t)
+        {
+            if (!m->rows[t]) continue;
+            m->toff[t] = m->tablesOff + v28;
+            v28 += m->stride[t] * m->rows[t];
+        }
+    }
+}
+
+/* Parse the CLI metadata at [off, off+len) of buf (CliMetadata::Init). */
+static void cli_meta_init(CLIMETA *m, const unsigned char *buf,
+                          unsigned long bufLen, unsigned long off,
+                          unsigned long len)
+{
+    unsigned long p, end;
+    unsigned nStream, i, k;
+
+    memset(m, 0, sizeof(*m));
+    m->d3 = (unsigned)off;
+    m->d4 = (unsigned)len;
+    if (len < 0x18 || off + 0x10 > bufLen || off + len > bufLen)
+    {
+        m->empty = 1;
+        return;
+    }
+    if (memcmp(buf + off, "BSJB", 4) != 0)
+    {
+        m->empty = 1;
+        return;
+    }
+    {
+        unsigned long verLen = rd32(buf + off + 12);
+        if (verLen > 0xFF)
+        {
+            m->empty = 1;
+            return;
+        }
+        p = off + 20 + ((verLen + 3) & ~3UL);
+    }
+    if (p < off + 20 || p > bufLen || p > off + len)
+    {
+        m->empty = 1;
+        return;
+    }
+    nStream = rd16(buf + p - 2);
+    m->nStream = nStream;
+    m->strmTable = (unsigned)p;
+    end = off + len;
+    if (end > bufLen) end = bufLen;
+    for (i = 0; i < nStream; ++i)
+    {
+        unsigned long soff, ssize, q, nlen;
+        const unsigned char *name;
+
+        if (p + 8 > end) break;
+        soff = rd32(buf + p);
+        ssize = rd32(buf + p + 4);
+        q = p + 8;
+        while (q < end && buf[q]) ++q;
+        if (q >= end) break;
+        nlen = q - (p + 8) + 1;      /* the DLL counts the terminator */
+        name = buf + p + 8;
+        p = (q + 1 + 3) & ~3UL;
+        if (soff > len || ssize > len - soff) continue;
+        if (nlen == 9 && memcmp(name, "#Strings", 9) == 0)
+        { m->stringsOff = (unsigned)(off + soff); m->stringsLen = (unsigned)ssize; }
+        else if (nlen == 4 && memcmp(name, "#US", 4) == 0)
+        { m->usOff = (unsigned)(off + soff); m->usLen = (unsigned)ssize; }
+        else if (nlen == 6 && memcmp(name, "#Blob", 6) == 0)
+        { m->blobOff = (unsigned)(off + soff); m->blobLen = (unsigned)ssize; }
+        else if (nlen == 6 && memcmp(name, "#GUID", 6) == 0)
+        { m->guidOff = (unsigned)(off + soff); m->guidLen = (unsigned)ssize; }
+        else if (nlen == 3 && memcmp(name, "#~", 3) == 0)
+        { m->tablesOff = (unsigned)(off + soff); m->tablesLen = (unsigned)ssize; }
+    }
+    if (m->tablesOff && m->tablesLen >= 0x18 &&
+        (unsigned long)m->tablesOff + 0x18 <= bufLen)
+    {
+        const unsigned char *tp = buf + m->tablesOff;
+        unsigned long q = (unsigned long)m->tablesOff + 24;
+        m->heapSizes = tp[6];
+        m->mask = (unsigned __int64)rd32(tp + 8) |
+                  ((unsigned __int64)rd32(tp + 12) << 32);
+        for (k = 0; k < 64; ++k)
+            if ((m->mask >> k) & 1)
+            {
+                if (q + 4 <= bufLen) m->rows[k] = rd32(buf + q);
+                q += 4;
+            }
+    }
+    m->empty = !(m->d3 | m->d4 | m->d5 | m->nStream | m->strmTable |
+                 m->stringsOff | m->stringsLen | m->usOff | m->usLen |
+                 m->blobOff | m->blobLen | m->guidOff | m->guidLen |
+                 m->tablesOff | m->tablesLen | m->heapSizes | (unsigned)m->mask);
+}
+
+static long cli_rva_to_off(const unsigned char *pe, unsigned long len,
+                           unsigned long rva)
+{
+    unsigned long lfa, nsec, opt, sh, i;
+
+    if (len < 0x40) return -1;
+    lfa = rd32(pe + 0x3C);
+    if (lfa + 24 > len || memcmp(pe + lfa, "PE\0\0", 4) != 0) return -1;
+    nsec = rd16(pe + lfa + 6);
+    opt = lfa + 24;
+    sh = opt + rd16(pe + lfa + 20);
+    for (i = 0; i < nsec; ++i)
+    {
+        unsigned long o = sh + 40 * i;
+        unsigned long vs, va, rs, ra;
+        if (o + 40 > len) break;
+        vs = rd32(pe + o + 8);
+        va = rd32(pe + o + 12);
+        rs = rd32(pe + o + 16);
+        ra = rd32(pe + o + 20);
+        if (rva >= va && rva < va + (vs > rs ? vs : rs))
+            return (long)(ra + (rva - va));
+    }
+    return -1;
+}
+
+/* Locate and parse the CLI metadata of a PE (ExtractCliMetadata path). */
+static void cli_meta_from_pe(CLIMETA *m, const unsigned char *pe,
+                             unsigned long len)
+{
+    unsigned long lfa, opt, dd, rva, size, off, metaOff, metaSize;
+
+    memset(m, 0, sizeof(*m));
+    m->empty = 1;
+    if (len < 0x40) return;
+    lfa = rd32(pe + 0x3C);
+    if (lfa + 24 > len || memcmp(pe + lfa, "PE\0\0", 4) != 0) return;
+    opt = lfa + 24;
+    dd = (rd16(pe + opt) == 0x20B) ? opt + 0x70 : opt + 0x60;
+    dd += 14 * 8;
+    if (dd + 8 > len) return;
+    rva = rd32(pe + dd);
+    size = rd32(pe + dd + 4);
+    if (!rva || !size) return;
+    off = (unsigned long)cli_rva_to_off(pe, len, rva);
+    if ((long)off < 0 || off + 16 > len) return;
+    metaOff = (unsigned long)cli_rva_to_off(pe, len, rd32(pe + off + 8));
+    metaSize = rd32(pe + off + 12);
+    if ((long)metaOff < 0 || !metaSize) return;
+    cli_meta_init(m, pe, len, metaOff, metaSize);
+}
+
+/* Read the target CliMetadata stored in the pre buffer. */
+static void cli_meta_from_bits(CLIMETA *m, BITR *br)
+{
+    unsigned k;
+
+    memset(m, 0, sizeof(*m));
+    if (br_read(br, 1))
+    {
+        unsigned d[15];
+        for (k = 0; k < 15; ++k) d[k] = br_read(br, 32);
+        m->d3 = d[0]; m->d4 = d[1]; m->d5 = d[2];
+        m->nStream = d[3]; m->strmTable = d[4];
+        m->stringsOff = d[5]; m->stringsLen = d[6];
+        m->usOff = d[7]; m->usLen = d[8];
+        m->blobOff = d[9]; m->blobLen = d[10];
+        m->guidOff = d[11]; m->guidLen = d[12];
+        m->tablesOff = d[13]; m->tablesLen = d[14];
+        m->heapSizes = (unsigned char)(br_read(br, 1) |
+                                       (br_read(br, 1) << 1) |
+                                       (br_read(br, 1) << 2));
+        m->mask = (unsigned __int64)br_read(br, 32) |
+                  ((unsigned __int64)br_read(br, 32) << 32);
+        for (k = 0; k < 64; ++k)
+            if ((m->mask >> k) & 1) m->rows[k] = br_read(br, 32);
+    }
+    m->empty = !(m->d3 | m->d4 | m->d5 | m->nStream | m->strmTable |
+                 m->stringsOff | m->stringsLen | m->usOff | m->usLen |
+                 m->blobOff | m->blobLen | m->guidOff | m->guidLen |
+                 m->tablesOff | m->tablesLen | m->heapSizes | (unsigned)m->mask);
+}
+
+/* RiftTable::FromBitReaderWithFormat: no presence bit, shared formats. */
+static int rift_read_fmt(RIFTENTRY **out, unsigned *outn, INTFORMAT *fa,
+                         INTFORMAT *fb, BITR *br)
+{
+    unsigned n, i;
+    __int64 left = 0, rift = 0;
+    RIFTENTRY *tab;
+
+    *out = NULL;
+    *outn = 0;
+    n = br_read_int(br);
+    if (n == 0xFFFFFFFFU || n > 0x0FFFFFFFUL)
+        return -1;
+    tab = (RIFTENTRY *)calloc(n ? (size_t)n : 1, sizeof(*tab));
+    if (!tab)
+        return -1;
+    for (i = 0; i < n; ++i)
+    {
+        left += if_read_number(fa, br);
+        rift += if_read_number(fb, br);
+        tab[i].left = left;
+        tab[i].right = left + rift;
+    }
+    *out = tab;
+    *outn = n;
+    return 0;
+}
+
+/* CliMap::InternalFromBitReader: four shared codecs, three heap maps, one
+ * GUID map, then one map per metadata table. */
+static int cli_map_read(CLIMAP *cm, BITR *br)
+{
+    INTFORMAT fa, fb, fc, fd;
+    unsigned i, t;
+
+    memset(cm, 0, sizeof(*cm));
+    if (br_read(br, 1) == 0)
+        return 0;
+    if (if_read(&fa, br) != 0 || if_read(&fb, br) != 0 ||
+        if_read(&fc, br) != 0 || if_read(&fd, br) != 0)
+        return -1;
+    for (i = 0; i < 4; ++i)
+    {
+        INTFORMAT *x = (i < 3) ? &fa : &fc;
+        INTFORMAT *y = (i < 3) ? &fb : &fd;
+        if (rift_read_fmt(&cm->heap[i], &cm->heapN[i], x, y, br) != 0)
+            return -1;
+    }
+    for (t = 0; t < 64; ++t)
+        if (rift_read_fmt(&cm->tbl[t], &cm->tblN[t], &fc, &fd, br) != 0)
+            return -1;
+    return 0;
+}
+
+typedef struct tagRIFTBUF
+{
+    RIFTENTRY *a;
+    unsigned n, cap;
+} RIFTBUF;
+
+static int riftbuf_add(RIFTBUF *b, __int64 l, __int64 r)
+{
+    if (b->n == b->cap)
+    {
+        unsigned nc = b->cap ? b->cap * 2 : 512;
+        RIFTENTRY *na = (RIFTENTRY *)realloc(b->a, (size_t)nc * sizeof(*na));
+        if (!na)
+            return -1;
+        b->a = na;
+        b->cap = nc;
+    }
+    b->a[b->n].left = l;
+    b->a[b->n].right = r;
+    ++b->n;
+    return 0;
+}
+
+/* AddHeapMap: one entry per heap-map breakpoint, in target-heap space. */
+static void cli_add_heap(RIFTBUF *o, __int64 a2, __int64 a3,
+                         const RIFTENTRY *rift, unsigned n)
+{
+    unsigned v4 = 0, i, v8;
+
+    if (!n)
+    {
+        riftbuf_add(o, a3, a2);
+        return;
+    }
+    while (v4 < n && rift[v4].left <= 0) ++v4;
+    v8 = v4 ? v4 - 1 : n - 1;
+    riftbuf_add(o, a3 + (rift[v8].right - rift[v8].left), a2);
+    for (i = v4; i < n; ++i)
+    {
+        if ((unsigned __int64)(rift[i].left >> 32) > 0) break;
+        riftbuf_add(o, a3 + rift[i].right, a2 + rift[i].left);
+    }
+}
+
+/* AddTableMap (sparse form): maps only the table map's breakpoints. */
+static void cli_add_table_sparse(RIFTBUF *o, __int64 a2, __int64 a3,
+                                 __int64 stride, const RIFTENTRY *rift,
+                                 unsigned n)
+{
+    unsigned v4 = 0, i, v8;
+
+    if (!n)
+    {
+        riftbuf_add(o, a3, a2);
+        return;
+    }
+    while (v4 < n && rift[v4].left <= 1) ++v4;
+    v8 = v4 ? v4 - 1 : n - 1;
+    riftbuf_add(o, a3 + (rift[v8].right - rift[v8].left) * stride, a2);
+    for (i = v4; i < n; ++i)
+    {
+        if ((unsigned __int64)(rift[i].left >> 32) > 0) break;
+        riftbuf_add(o, a3 + (rift[i].right - 1) * stride,
+                       a2 + (rift[i].left - 1) * stride);
+    }
+}
+
+/* AddTableMap (detailed form): used when the row layouts differ, i.e. a
+ * heap or coded-index column changed between 2 and 4 bytes.  Maps the rows
+ * and the affected column cells.  The DLL reads two uninitialised fields
+ * (+40/+44) as the source position of a grown last column; they held 5 on
+ * every observed delta, so use that. */
+static void cli_add_table_full(RIFTBUF *o, const CLIMETA *src,
+                               const CLIMETA *tgt, unsigned t,
+                               const RIFTENTRY *rift, unsigned n)
+{
+    __int64 strideS = (__int64)src->stride[t];
+    __int64 strideT = (__int64)tgt->stride[t];
+    __int64 sBase = (__int64)src->toff[t];
+    __int64 tBase = (__int64)tgt->toff[t];
+    unsigned rc = src->rows[t];
+    unsigned c, i;
+    __int64 rv, end;
+
+    rv = rift_get_rift(rift, n, 0, &end);
+    if (rc > 1)
+    {
+        for (i = 1; i < rc; ++i)
+        {
+            if ((__int64)i > end) rv = rift_get_rift(rift, n, (__int64)i, &end);
+            riftbuf_add(o, tBase + (rv + (__int64)i - 1) * strideT,
+                           sBase + ((__int64)i - 1) * strideS);
+        }
+    }
+    for (c = 0; c < g_cliNCols[t]; ++c)
+    {
+        unsigned si = src->is4[t][c];
+        unsigned ti = tgt->is4[t][c];
+        int last = (g_cliNCols[t] <= c + 1);
+        __int64 sCol, tCol;
+
+        if (si == ti) continue;
+        if (si && last) continue;
+        sCol = sBase + src->coff[t][c];
+        tCol = tBase + tgt->coff[t][c];
+        if (si)
+        {
+            rv = rift_get_rift(rift, n, 0, &end);
+            if (rc > 1)
+            {
+                for (i = 1; i < rc; ++i)
+                {
+                    if ((__int64)i > end) rv = rift_get_rift(rift, n, (__int64)i, &end);
+                    riftbuf_add(o, tCol + (rv + (__int64)i - 1) * strideT + 2,
+                                   sCol + ((__int64)i - 1) * strideS + 4);
+                }
+            }
+        }
+        else
+        {
+            rv = rift_get_rift(rift, n, 0, &end);
+            if (rc > 1)
+            {
+                for (i = 1; i < rc; ++i)
+                {
+                    __int64 base;
+                    if ((__int64)i > end) rv = rift_get_rift(rift, n, (__int64)i, &end);
+                    base = tCol + (rv + (__int64)i - 1) * strideT;
+                    if (last)
+                        riftbuf_add(o, base + 2, 5);
+                    riftbuf_add(o, base + 4,
+                                   sCol + ((__int64)i - 1) * strideS + 2);
+                }
+            }
+        }
+    }
+}
+
+/* Stable merge sort by left.  The DLL's RiftTable::Sort is a stable radix
+ * sort, and the order among equal lefts decides which mapping survives the
+ * reduction below. */
+static void rift_stable_sort(RIFTENTRY *a, unsigned n, RIFTENTRY *tmp)
+{
+    unsigned width, i;
+    for (width = 1; width < n; width *= 2)
+    {
+        for (i = 0; i < n; i += 2 * width)
+        {
+            unsigned lo = i;
+            unsigned mid = i + width;
+            unsigned hi = i + 2 * width;
+            unsigned x = lo, y = mid, k = lo;
+            if (mid > n) mid = n;
+            if (hi > n) hi = n;
+            while (x < mid && y < hi)
+            {
+                if (a[y].left < a[x].left) tmp[k++] = a[y++];
+                else tmp[k++] = a[x++];
+            }
+            while (x < mid) tmp[k++] = a[x++];
+            while (y < hi) tmp[k++] = a[y++];
+        }
+        memcpy(a, tmp, (size_t)n * sizeof(*a));
+    }
+}
+
+/* IL operand kinds (DisassemblerCli::oneByteParam / twoByteParam /
+ * paramLength, msdelta.dll).  Kinds 1, 4, 8, 10 and 11 carry a
+ * metadata token; 9 is a switch whose 4-byte count follows. */
+static const unsigned char g_cliIlParam1[256] = {
+    5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 16, 16,
+    16, 16, 16, 16, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 14,
+    2, 3, 15, 6, 5, 5, 5, 4, 4, 7, 5, 13, 13, 13, 13, 13,
+    13, 13, 13, 13, 13, 13, 13, 13, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 9, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+    5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+    5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 4,
+    11, 11, 8, 4, 11, 11, 5, 5, 5, 11, 5, 1, 1, 1, 1, 1,
+    1, 11, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 11, 11, 5, 11,
+    5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+    5, 5, 5, 11, 11, 11, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+    5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+    5, 5, 11, 5, 5, 5, 11, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+    10, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 0, 13, 5,
+    5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+    5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+};
+
+static const unsigned char g_cliIlParam2[256] = {
+    5, 5, 5, 5, 5, 5, 4, 4, 5, 12, 12, 12, 12, 12, 12, 5,
+    5, 5, 14, 5, 5, 11, 11, 5, 5, 5, 5, 5, 11, 5, 5, 5,
+    5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+    5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+    5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+    5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+    5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+    5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+    5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+    5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+    5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+    5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+    5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+    5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+    5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+    5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+};
+
+static const unsigned char g_cliIlParamLen[18] = { 4, 4, 4, 8, 4, 0, 8, 4, 4, 4, 4, 4, 2, 1, 1, 4, 1, 0 };
+static unsigned rift_map_value(const RIFTENTRY *t, unsigned n, unsigned v)
+{
+    unsigned i, idx;
+    if (!n) return v;
+    if ((__int64)v >= t[0].left)
+    {
+        idx = 0;
+        for (i = 1; i < n && t[i].left <= (__int64)v; ++i)
+            idx = i;
+    }
+    else
+        idx = n - 1;
+    return (unsigned)((__int64)v + (t[idx].right - t[idx].left));
+}
+
+/* CliMetadata::GetCellValue: read one column value of one row. */
+static unsigned cli_get_cell(const CLIMETA *m, const unsigned char *buf,
+                             unsigned long bufLen, unsigned table,
+                             unsigned row, unsigned col)
+{
+    unsigned long off;
+    if (table >= 64 || col >= g_cliNCols[table] || row == 0 ||
+        row > m->rows[table])
+        return 0;
+    off = (unsigned long)m->toff[table] +
+          (unsigned long)(row - 1) * m->stride[table] + m->coff[table][col];
+    if (off + 4 > bufLen)
+        return 0;
+    if (m->is4[table][col])
+        return rd32(buf + off);
+    return rd16(buf + off);
+}
+
+static unsigned long cli_rva_max_size(const unsigned char *pe,
+                                      unsigned long len, unsigned long rva)
+{
+    unsigned long lfa, nsec, opt, sh, i, sizeOfHeaders;
+
+    if (len < 0x40) return 0;
+    lfa = rd32(pe + 0x3C);
+    if (lfa + 24 > len || memcmp(pe + lfa, "PE\0\0", 4) != 0) return 0;
+    nsec = rd16(pe + lfa + 6);
+    opt = lfa + 24;
+    sh = opt + rd16(pe + lfa + 20);
+    sizeOfHeaders = rd32(pe + opt + 0x3C);
+    if (rva < sizeOfHeaders) return sizeOfHeaders - rva;
+    for (i = 0; i < nsec; ++i)
+    {
+        unsigned long o = sh + 40 * i;
+        unsigned long vs, va, rs;
+        if (o + 40 > len) break;
+        vs = rd32(pe + o + 8);
+        va = rd32(pe + o + 12);
+        rs = rd32(pe + o + 16);
+        if (rva >= va && rva < va + (vs > rs ? vs : rs))
+            return va + rs - rva;
+    }
+    return 0;
+}
+
+/* CliHelper::GetMethodOffset: locate a CLI method body by RVA. */
+static unsigned long cli_method_offset(const unsigned char *buf,
+                                       unsigned long bufLen,
+                                       unsigned long rva,
+                                       unsigned long *hdr,
+                                       unsigned long *codeSize)
+{
+    long o;
+    unsigned long off, maxSize, h, cs, b0;
+
+    *hdr = 0;
+    *codeSize = 0;
+    o = cli_rva_to_off(buf, bufLen, rva);
+    if (o < 0) return 0;
+    off = (unsigned long)o;
+    maxSize = cli_rva_max_size(buf, bufLen, rva);
+    if (!maxSize || off >= bufLen) return 0;
+    b0 = buf[off];
+    switch (b0 & 3)
+    {
+    case 2:
+        h = 1;
+        cs = b0 >> 2;
+        break;
+    case 3:
+        if (maxSize < 0xC || off + 8 > bufLen) return 0;
+        h = 4UL * (buf[off + 1] >> 4);
+        if (h < 0xC || h > maxSize) return 0;
+        cs = rd32(buf + off + 4);
+        break;
+    default:
+        return 0;
+    }
+    if (cs > maxSize - h) return 0;
+    *hdr = h;
+    *codeSize = cs;
+    return off;
+}
+
+/* RiftTransformCliDisasm: rewrite the metadata tokens of every CLI method
+ * body through the CLI map.  This is the whole seed transform for CLI
+ * files; the disassembly/relocation transforms run for native images. */
+static void pa30_transform_cli_disasm(unsigned char *buf, unsigned long len,
+                                      const CLIMETA *meta, const CLIMAP *cm)
+{
+    unsigned long row;
+    unsigned methods = 0, tokens = 0, toks = 0, insns = 0;
+
+    if (!meta || meta->empty || meta->rows[6] == 0)
+    {
+        if (getenv("PA30_DEBUG")) fprintf(stderr,
+            "CLITR skip empty=%d rows6=%u\n", meta ? meta->empty : -1,
+            meta ? meta->rows[6] : 0);
+        return;
+    }
+    for (row = 1; row <= meta->rows[6]; ++row)
+    {
+        unsigned long rva = (unsigned long)cli_get_cell(meta, buf, len, 6,
+                                                        (unsigned)row, 0) +
+                            meta->d5;
+        unsigned long hdr = 0, codeSize = 0, off, n, pos;
+        unsigned char *p;
+
+        if (!rva) continue;
+        off = cli_method_offset(buf, len, rva, &hdr, &codeSize);
+        if (!off) continue;
+        ++methods;
+        p = buf + off + hdr;
+        n = codeSize;
+        if (off + hdr + n > len) n = len - off - hdr;
+        pos = 0;
+        while (pos < n)
+        {
+            unsigned op, plen;
+            unsigned long operand;
+            unsigned tok, hi, lo;
+
+            if (p[pos] == 0xFE)
+            {
+                ++pos;
+                if (pos >= n) break;
+                op = g_cliIlParam2[p[pos]];
+            }
+            else
+                op = g_cliIlParam1[p[pos]];
+            plen = g_cliIlParamLen[op];
+            if (pos + 1 + plen > n) break;
+            operand = pos + 1;
+            pos += 1 + plen;
+            if (op != 1 && op != 4 && op != 8)
+            {
+                if (op == 9)
+                {
+                    unsigned long cnt;
+                    if (n - pos < 4) break;
+                    cnt = rd32(p + operand);
+                    if ((n - pos) >> 2 < cnt) break;
+                    pos += 4 * cnt;
+                    continue;
+                }
+                if (op <= 9 || op > 11) continue;
+            }
+            ++toks; ++insns;
+            tok = rd32(p + operand);
+            ++toks;
+            ++insns;
+            hi = tok >> 24;
+            lo = tok & 0xFFFFFFUL;
+            if (hi >= 0x40)
+            {
+                if (hi == 0x70)
+                {
+                    unsigned v = rift_map_value(cm->heap[1], cm->heapN[1], lo);
+                    p[operand + 0] = (unsigned char)((v | 0x70000000UL) & 0xFF);
+                    p[operand + 1] = (unsigned char)(((v | 0x70000000UL) >> 8) & 0xFF);
+                    p[operand + 2] = (unsigned char)(((v | 0x70000000UL) >> 16) & 0xFF);
+                    p[operand + 3] = (unsigned char)(((v | 0x70000000UL) >> 24) & 0xFF);
+                }
+            }
+            else
+            {
+                unsigned v = rift_map_value(cm->tbl[hi], cm->tblN[hi], lo);
+                unsigned nv = (hi << 24) | v;
+                if (nv != tok) ++tokens;
+                p[operand + 0] = (unsigned char)(nv & 0xFF);
+                p[operand + 1] = (unsigned char)((nv >> 8) & 0xFF);
+                p[operand + 2] = (unsigned char)((nv >> 16) & 0xFF);
+                p[operand + 3] = (unsigned char)((nv >> 24) & 0xFF);
+            }
+        }
+    }
+    if (getenv("PA30_DEBUG")) fprintf(stderr,
+        "CLITR methods=%u tokens=%u toks=%u insns=%u\n",
+        methods, tokens, toks, insns);
+}
+
+/* CliMap::MapCoded: remap a coded index through its tag table. */
+static unsigned cli_map_coded(const CLIMAP *cm, unsigned idx, unsigned v)
+{
+    unsigned bits, tag, tbl;
+    if (idx >= 13) return v;
+    bits = g_cliCodedBits[idx];
+    tag = v & ((1u << bits) - 1);
+    if (tag >= g_cliCodedCount[idx]) return v;
+    tbl = g_cliCodedMem[idx][tag];
+    if (tbl >= 64 || !cm->tblN[tbl]) return v;
+    return tag | (rift_map_value(cm->tbl[tbl], cm->tblN[tbl], v >> bits) << bits);
+}
+
+static void cli_put(unsigned char *p, unsigned is4, unsigned v)
+{
+    if (is4)
+    {
+        p[0] = (unsigned char)(v & 0xFF);
+        p[1] = (unsigned char)((v >> 8) & 0xFF);
+        p[2] = (unsigned char)((v >> 16) & 0xFF);
+        p[3] = (unsigned char)((v >> 24) & 0xFF);
+    }
+    else
+    {
+        p[0] = (unsigned char)(v & 0xFF);
+        p[1] = (unsigned char)((v >> 8) & 0xFF);
+    }
+}
+
+/* RiftTransformCliMetadata: rewrite every heap index, table index, coded
+ * index and method RVA of the CLI metadata through the CLI map, so the seed
+ * lines up row-for-row with the target's metadata. */
+static void pa30_transform_cli_metadata(unsigned char *buf, unsigned long len,
+                                        const CLIMETA *src, const CLIMETA *tgt,
+                                        const CLIMAP *cm, const RIFTENTRY *rt,
+                                        unsigned rn)
+{
+    unsigned t, c, row;
+    int rvaWrite = 1;
+
+    if (!src || src->empty) return;
+    if (getenv("PA30_CLIRVA")) rvaWrite = atoi(getenv("PA30_CLIRVA"));
+    for (t = 0; t < 64; ++t)
+    {
+        unsigned ncols, stride, toff, n;
+        if (!src->rows[t]) continue;
+        ncols = g_cliNCols[t];
+        stride = src->stride[t];
+        toff = src->toff[t];
+        n = src->rows[t];
+        for (c = 0; c < ncols; ++c)
+        {
+            unsigned ty = g_cliColType[t][c];
+            unsigned idx = g_cliColIdx[t][c];
+            unsigned coff = src->coff[t][c];
+            unsigned is4 = src->is4[t][c];
+            unsigned wide = is4 ? 4 : 2;
+
+            if (ty == 0 || ty == 1)
+                continue;                   /* plain constant */
+            if (ty == 3 && !cm->heapN[0]) continue;
+            if (ty == 4 && !cm->heapN[2]) continue;
+            if (ty == 5 && !cm->heapN[3]) continue;
+            if (ty == 6 && (idx >= 64 || !cm->tblN[idx])) continue;
+            for (row = 1; row <= n; ++row)
+            {
+                unsigned long o = (unsigned long)toff +
+                                  (unsigned long)(row - 1) * stride + coff;
+                unsigned v, nv;
+                if (o + wide > len) break;
+                v = is4 ? rd32(buf + o) : rd16(buf + o);
+                nv = v;
+                switch (ty)
+                {
+                case 2:
+                    nv = rvaWrite
+                        ? (unsigned)((long)pa30_map_rva(rt, rn,
+                                        (unsigned long)src->d5 + v) -
+                                     (long)tgt->d5)
+                        : 0;
+                    break;
+                case 3:
+                    nv = rift_map_value(cm->heap[0], cm->heapN[0], v);
+                    break;
+                case 4:
+                    nv = rift_map_value(cm->heap[2], cm->heapN[2], v);
+                    break;
+                case 5:
+                    nv = rift_map_value(cm->heap[3], cm->heapN[3], v);
+                    break;
+                case 6:
+                    nv = rift_map_value(cm->tbl[idx], cm->tblN[idx], v);
+                    break;
+                case 7:
+                    nv = cli_map_coded(cm, idx, v);
+                    break;
+                default:
+                    break;
+                }
+                if (nv != v)
+                    cli_put(buf + o, is4, nv);
+            }
+        }
+    }
+}
+
+/* Build the CLI contribution to the compression rift. */
+static int cli_compression_rift(RIFTENTRY **out, unsigned *outn,
+                                const CLIMETA *src, const CLIMETA *tgt,
+                                const CLIMAP *cm)
+{
+    RIFTBUF o;
+    unsigned t;
+
+    *out = NULL;
+    *outn = 0;
+    memset(&o, 0, sizeof(o));
+    if (src->empty || tgt->empty)
+        return 0;
+    cli_add_heap(&o, (__int64)src->stringsOff, (__int64)tgt->stringsOff,
+                 cm->heap[0], cm->heapN[0]);
+    cli_add_heap(&o, (__int64)src->usOff, (__int64)tgt->usOff,
+                 cm->heap[1], cm->heapN[1]);
+    cli_add_heap(&o, (__int64)src->blobOff, (__int64)tgt->blobOff,
+                 cm->heap[2], cm->heapN[2]);
+    cli_add_table_sparse(&o, (__int64)src->guidOff, (__int64)tgt->guidOff,
+                         16, cm->heap[3], cm->heapN[3]);
+    for (t = 0; t < 64; ++t)
+    {
+        unsigned c, same;
+        if (!src->rows[t] || !tgt->rows[t]) continue;
+        same = (src->stride[t] == tgt->stride[t]);
+        for (c = 0; same && c < g_cliNCols[t]; ++c)
+            if (src->is4[t][c] != tgt->is4[t][c]) same = 0;
+        if (same)
+            cli_add_table_sparse(&o, (__int64)src->toff[t],
+                                 (__int64)tgt->toff[t],
+                                 (__int64)src->stride[t],
+                                 cm->tbl[t], cm->tblN[t]);
+        else
+            cli_add_table_full(&o, src, tgt, t, cm->tbl[t], cm->tblN[t]);
+    }
+    *out = o.a;
+    *outn = o.n;
+    return 0;
+}
+
+static void cli_map_free(CLIMAP *cm)
+{
+    unsigned i;
+    for (i = 0; i < 4; ++i) { free(cm->heap[i]); cm->heap[i] = NULL; cm->heapN[i] = 0; }
+    for (i = 0; i < 64; ++i) { free(cm->tbl[i]); cm->tbl[i] = NULL; cm->tblN[i] = 0; }
+}
+
 static unsigned long pa30_map_rva(const RIFTENTRY *rt, unsigned rn,
                                   unsigned long rva)
 {
@@ -3055,10 +4100,21 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
         const unsigned char *decompressSrc = source;
         RIFTENTRY *orift = NULL;
         unsigned oriftN = 0;
+        CLIMETA cliSrc;
+        CLIMETA cliTgt;
+        CLIMAP cliMap;
+        int cliMapOk = 0;
+
+        memset(&cliSrc, 0, sizeof(cliSrc));
+        memset(&cliTgt, 0, sizeof(cliTgt));
+        memset(&cliMap, 0, sizeof(cliMap));
+        cliSrc.empty = 1;
+        cliTgt.empty = 1;
 
         /* The pre blob is bit-packed with the same 3-bit leader.  It holds
-         * the target PE info, its RVA map, optional CLI metadata, and the
-         * compression RIFT table used by 0x54000 matches. */
+         * the target PE info, its RVA map, optional CLI metadata, the used
+         * rift table, the CLI map, and the compression RIFT table used by
+         * 0x54000 matches. */
         if (preLen > 16)
         {
             BITR pb;
@@ -3078,39 +4134,25 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
                 "PRE targetinfo at bit %lu\n", pb.bitpos);
             if (rift_read(&pb, &tmp, &tmpN) == 0)
             {
-                int cliPresent;
                 if (getenv("PA30_DEBUG")) fprintf(stderr,
                     "PRE rift1 n=%u at bit %lu\n", tmpN, pb.bitpos);
-                cliPresent = (int)br_read(&pb, 1);     /* CliMetadata present */
+                cli_meta_from_bits(&cliTgt, &pb);
                 if (getenv("PA30_DEBUG")) fprintf(stderr,
-                    "PRE cli=%d at bit %lu\n", cliPresent, pb.bitpos);
-                if (cliPresent)
+                    "PRE cli=%d at bit %lu\n", !cliTgt.empty, pb.bitpos);
+                if (rift_read(&pb, &rt, &rn) == 0)
                 {
-                    unsigned __int64 mask;
-                    unsigned k;
-                    unsigned nset = 0;
-                    pb.bitpos += 15 * 32 + 3;
-                    mask = (unsigned __int64)br_read(&pb, 32) |
-                           ((unsigned __int64)br_read(&pb, 32) << 32);
-                    for (k = 0; k < 64; ++k)
-                        if ((mask >> k) & 1)
-                        {
-                            br_skip(&pb, 32);
-                            ++nset;
-                        }
-                    if (getenv("PA30_DEBUG")) fprintf(stderr,
-                        "PRE cli mask=%016I64x nset=%u at bit %lu\n",
-                        mask, nset, pb.bitpos);
-                }
-                if (rift_read(&pb, &rt, &rn) == 0 && getenv("PA30_DEBUG"))
-                {
-                    unsigned qi;
-                    fprintf(stderr, "PRE rift2(compression) n=%u at bit %lu\n",
-                            rn, pb.bitpos);
-                    for (qi = 0; qi < rn; ++qi)
-                        fprintf(stderr, "  rt[%u] left=%I64d right=%I64d rift=%I64d\n",
-                                qi, rt[qi].left, rt[qi].right,
-                                rt[qi].right - rt[qi].left);
+                    if (getenv("PA30_DEBUG"))
+                    {
+                        unsigned qi;
+                        fprintf(stderr, "PRE rift2(compression) n=%u at bit %lu\n",
+                                rn, pb.bitpos);
+                        for (qi = 0; qi < rn; ++qi)
+                            fprintf(stderr, "  rt[%u] left=%I64d right=%I64d rift=%I64d\n",
+                                    qi, rt[qi].left, rt[qi].right,
+                                    rt[qi].right - rt[qi].left);
+                    }
+                    if (cli_map_read(&cliMap, &pb) == 0)
+                        cliMapOk = 1;
                 }
             }
         }
@@ -3221,6 +4263,71 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
             }
         }
 
+        cli_meta_from_pe(&cliSrc, source, sourceLen);
+        cli_meta_derive(&cliSrc);
+        cli_meta_derive(&cliTgt);
+
+        /* Fold in the rift the CLI map induces.  The DLL builds
+         * compressionRiftTable3 = Sum(compressionRiftTable2, cliMapCompression)
+         * before the decompressor consumes it; the CLI entries are the finer
+         * grained mapping of the metadata heaps and tables. */
+        if (cliMapOk)
+        {
+            RIFTENTRY *cr = NULL;
+            unsigned crn = 0;
+            if (cli_compression_rift(&cr, &crn, &cliSrc, &cliTgt, &cliMap) == 0 &&
+                crn)
+            {
+                unsigned total = oriftN + crn;
+                RIFTENTRY *comb = (RIFTENTRY *)malloc(
+                    (size_t)(total ? total : 1) * sizeof(*comb));
+                RIFTENTRY *sortTmp = (RIFTENTRY *)malloc(
+                    (size_t)(total ? total : 1) * sizeof(*sortTmp));
+                if (comb && sortTmp)
+                {
+                    unsigned j, w, k;
+                    /* Concatenate and sort stably by left, exactly like the
+                     * DLL's Sum followed by its radix Sort.  On equal lefts
+                     * the CLI entry comes later and wins the reduction. */
+                    if (oriftN)
+                        memcpy(comb, orift, (size_t)oriftN * sizeof(*comb));
+                    for (j = 0; j < crn; ++j)
+                    {
+                        comb[oriftN + j].left = (__int64)sourceLen + cr[j].left;
+                        comb[oriftN + j].right = cr[j].right;
+                    }
+                    rift_stable_sort(comb, total, sortTmp);
+                    for (k = 0, w = 0; k < total; ++k)
+                    {
+                        if (comb[k].left <= 0) continue;
+                        if (w && comb[w - 1].left == comb[k].left)
+                        {
+                            comb[w - 1] = comb[k];
+                            continue;
+                        }
+                        if (w && (comb[w - 1].right - comb[w - 1].left) ==
+                                 (comb[k].right - comb[k].left)) continue;
+                        comb[w++] = comb[k];
+                    }
+                    free(sortTmp);
+                    free(orift);
+                    orift = comb;
+                    oriftN = w;
+                    if (getenv("PA30_DEBUG")) fprintf(stderr,
+                        "CLIRIFT n=%u merged ORIFT n=%u\n", crn, oriftN);
+                    if (getenv("PA30_ORMAP"))
+                    {
+                        unsigned q;
+                        for (q = 0; q < oriftN; ++q)
+                            fprintf(stderr, "  mo[%u] %I64d -> %I64d (rift %I64d)\n",
+                                    q, orift[q].left, orift[q].right,
+                                    orift[q].right - orift[q].left);
+                    }
+                }
+            }
+            free(cr);
+        }
+
         if (getenv("PA30_ORIFT"))
         {
             FILE *rf = fopen(getenv("PA30_ORIFT"), "rb");
@@ -3328,6 +4435,36 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
                                     }
                                 }
                             }
+                            /* CLI assemblies take the CLI transform only;
+                             * native images get the disassembly/relocation
+                             * pipeline.  The delta's file-type mnemonic picks
+                             * between them. */
+                            if (!cliSrc.empty)
+                            {
+                                if (getenv("PA30_DEBUG")) fprintf(stderr, "SEED cli shared\n");
+                                pa30_transform_pointers(prepared, sourceLen, rt, rn,
+                                    oldBase, peImageBase,
+                                    sizeOfImage, sizeOfHeaders, hintBuf);
+                                pa30_transform_relocs(prepared, sourceLen, rt, rn,
+                                    oldBase, peImageBase, sizeOfImage);
+                                pa30_transform_resources(prepared, sourceLen, rt, rn);
+                                pa30_mark_import_section(prepared, sourceLen);
+                                if (getenv("PA30_BLIND"))
+                                    pa30_transform_rvas(prepared, sourceLen, rt, rn,
+                                        sizeOfImage, sizeOfHeaders);
+                                else
+                                    pa30_rewrite_imports(prepared, sourceLen, rt, rn);
+                                pa30_transform_exports(prepared, sourceLen, rt, rn);
+                                if (getenv("PA30_DEBUG")) fprintf(stderr, "SEED cli disasm\n");
+                                pa30_transform_cli_disasm(prepared, sourceLen,
+                                                          &cliSrc, &cliMap);
+                                if (getenv("PA30_DEBUG")) fprintf(stderr, "SEED cli metadata\n");
+                                pa30_transform_cli_metadata(prepared, sourceLen,
+                                                            &cliSrc, &cliTgt,
+                                                            &cliMap, rt, rn);
+                            }
+                            else
+                            {
                             if (getenv("PA30_DEBUG")) fprintf(stderr, "SEED pointers\n");
                             pa30_transform_pointers(prepared, sourceLen, rt, rn,
                                 oldBase, peImageBase,
@@ -3363,6 +4500,7 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
                             if (getenv("PA30_DEBUG")) fprintf(stderr, "SEED exports\n");
                             pa30_transform_exports(prepared, sourceLen,
                                                    rt, rn);
+                            }
                             if (getenv("PA30_DEBUG")) fprintf(stderr, "SEED done\n");
                             free(hintBuf);
                         }
@@ -3420,6 +4558,7 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
             }
         }
         if (decompressSrc != source) free((void *)decompressSrc);
+        cli_map_free(&cliMap);
         free(tmp);
         free(orift);
         free(rt);

@@ -1484,3 +1484,70 @@ Phase D is the genuine open-ended piece.
     both byte-exact against OS delegation.  blob 0/1, d0/d1, PA19, XPRESS,
     LZX and LZMS all remain byte-exact.  OS delegation is still the default;
     the native path is opt-in via PA30_NO_OS=1.
+
+
+    **CLI metadata compression rift (part 53).**  .NET assemblies were the
+    last native PA30 gap.  The delta pipeline is:
+
+      ApplyPreProcessSourcePe:
+        sourceOffsetToRva = ExtractImageOffsetToRva(sourcePe)
+        sourceCliMetadata = ExtractCliMetadata(sourcePe)
+        targetInfo      = BitReadPortableExecutableInfo      (imagebase, gp,
+                          timestamp, targetRvaToOffset, targetCliMetadata)
+        usedRiftTable   = BitReadRiftTable(targetInfo)
+        cliMap          = BitReadCliMap(usedRiftTable)
+        compression0    = Multiply(sourceOffsetToRva, usedRiftTable)
+        compression1    = Multiply(compression0, targetRvaToOffset)
+        compression2    = Reverse(compression1)
+        cliCompression  = CompressionRiftTableFromCliMap(
+                              sourceCliMetadata, targetCliMetadata,
+                              cliMap, transformed)
+        compression3    = Sum(compression2, cliCompression, 1)
+
+    The offset rift fed to the decompressor is compression3, not compression2.
+    Without the CLI part the 0x54000 (k<3) distances land outside the
+    combined window and the delta fails with "distfail".
+
+    Implemented in delta.c:
+
+      - cli_meta_from_pe / cli_meta_from_bits: the 15 dword CliMetadata
+        fields, the three heap-size bits, the 64-bit "valid" mask and the
+        row counts.  The derived layout (row stride, table data offset,
+        2/4-byte flag and column offsets) is recomputed with the DLL's
+        static CLI schema (dword_10011DD8) and coded-index tables
+        (dword_10014E50 / dword_10014E54).
+      - cli_map_read: the four shared IntFormats, three heap maps, the GUID
+        map and 64 table maps (RiftTable::FromBitReaderWithFormat has no
+        presence bit).
+      - cli_compression_rift: AddHeapMap and the sparse AddTableMap verbatim,
+        plus the detailed AddTableMap used when a column changed between two
+        and four bytes.
+      - the result is concatenated with the offset rift, stable-sorted by
+        left (the DLL's radix Sort is stable) and reduced the same way.
+
+    Verified: for the delta "83" example the rebuilt CLI rift matches the
+    DLL's 876 entries exactly (dumped through gdb at
+    CompressionRiftTableFromCliMapComponent::InternalProcess) and the
+    delta decodes instead of failing.
+
+    **CLI seed transforms (part 54).**  With the rift correct a CLI delta
+    decodes, but the seed still has to match.  A CLI assembly's file-type
+    mnemonic selects RiftTransformCliDisasm / RiftTransformCliMetadata
+    instead of the native disassembly pipeline (no .pdata, RIP or relative
+    call/jump rewriting):
+
+      - RiftTransformCliDisasm walks every MethodDef row, locates the
+        method body (tiny/fat header), decodes the IL with the DLL's
+        DisassemblerCli tables and rewrites each metadata token: table
+        tokens go through the CLI map's per-table rift, 0x70 strings
+        through the #US heap map.
+      - RiftTransformCliMetadata rewrites every heap index, table index,
+        coded index and method RVA cell of the metadata tables through the
+        same maps.  The disassembly pass must run first, because it needs
+        the original method RVAs.
+
+    Status: the seed now matches the DLL everywhere except the signature
+    blobs (#Blob heap, kinds 1/2/3/4/9).  A signature parser that remaps the
+    TypeDefOrRef tokens inside those blobs is still missing, so the example
+    delta is 417 bytes short of byte-exact.  Regressions (blob 0/1, PA19,
+    XPRESS, LZX, LZMS, KB2959977 513/513, KB5131083 209/209) are unaffected.
