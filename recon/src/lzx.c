@@ -479,7 +479,6 @@ static int lzxReadBlockHeader( LzxDecoder *d )
 		d->intelStarted = 1;
 		d->bitcnt = 0;
 		d->bitbuf = 0;
-		d->pendingValid = 0;
 		// and the three offsets that were used last are stored too
 		for( i=0; i<12; i++ ) {
 			unsigned int byte;
