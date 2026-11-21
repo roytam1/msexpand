@@ -1875,16 +1875,22 @@ static const unsigned char g_cliIlParam2[256] = {
 static const unsigned char g_cliIlParamLen[18] = { 4, 4, 4, 8, 4, 0, 8, 4, 4, 4, 4, 4, 2, 1, 1, 4, 1, 0 };
 static unsigned rift_map_value(const RIFTENTRY *t, unsigned n, unsigned v)
 {
-    unsigned i, idx;
+    unsigned lo, hi, idx;
     if (!n) return v;
-    if ((__int64)v >= t[0].left)
-    {
-        idx = 0;
-        for (i = 1; i < n && t[i].left <= (__int64)v; ++i)
-            idx = i;
-    }
+    if ((__int64)v < t[0].left)
+        idx = n - 1;                 /* the DLL uses the last rift here */
     else
-        idx = n - 1;
+    {
+        lo = 0;
+        hi = n - 1;
+        while (lo < hi)
+        {
+            unsigned mid = (lo + hi + 1) >> 1;
+            if (t[mid].left <= (__int64)v) lo = mid;
+            else hi = mid - 1;
+        }
+        idx = lo;
+    }
     return (unsigned)((__int64)v + (t[idx].right - t[idx].left));
 }
 
@@ -2098,13 +2104,278 @@ static void cli_put(unsigned char *p, unsigned is4, unsigned v)
     }
 }
 
+/* ---- Signature blob token remapping (RiftTransformCliMetadata, blob pass) ---- */
+
+typedef struct tagCLIBLOBREF
+{
+    unsigned off;
+    unsigned kind;
+} CLIBLOBREF;
+
+typedef struct tagCLIBLOBSET
+{
+    CLIBLOBREF a[8192];
+    unsigned n;
+} CLIBLOBSET;
+
+static void cli_blob_collect(CLIBLOBSET *s, unsigned off, unsigned kind)
+{
+    unsigned i;
+    for (i = 0; i < s->n; ++i)
+        if (s->a[i].off == off) return;      /* the DLL keeps the first kind */
+    if (s->n < 8192)
+    {
+        s->a[s->n].off = off;
+        s->a[s->n].kind = kind;
+        ++s->n;
+    }
+}
+
+/* Read a compressed (ECMA-335) unsigned integer; *pos advances past it. */
+static unsigned sig_comp(const unsigned char *p, unsigned long n,
+                         unsigned long *pos)
+{
+    unsigned long i = *pos;
+    unsigned v;
+    if (i >= n) { *pos = n; return 0; }
+    v = p[i];
+    if (!(v & 0x80))
+    {
+        *pos = i + 1;
+        return v;
+    }
+    if (!(v & 0x40))
+    {
+        if (i + 1 >= n) { *pos = n; return v & 0x3F; }
+        *pos = i + 2;
+        return ((v & 0x3F) << 8) | p[i + 1];
+    }
+    if (!(v & 0x20))
+    {
+        if (i + 3 >= n) { *pos = n; return v & 0x1F; }
+        *pos = i + 4;
+        return ((v & 0x1F) << 24) | ((unsigned)p[i + 1] << 16) |
+               ((unsigned)p[i + 2] << 8) | p[i + 3];
+    }
+    *pos = n;               /* invalid compressed integer */
+    return 0;
+}
+
+/* Re-encode a remapped TypeDefOrRef-style token in place, using the same
+ * field width the DLL writes (it keeps the original span). */
+static void sig_put_comp(unsigned char *p, unsigned long n,
+                         unsigned long start, unsigned long end, unsigned v)
+{
+    unsigned long width = end - start;
+    if (v < 0x80)
+    {
+        if (width >= 1) p[start] = (unsigned char)v;
+    }
+    else if (v < 0x4000)
+    {
+        if (width >= 2)
+        {
+            p[start] = (unsigned char)((v >> 8) | 0x80);
+            p[start + 1] = (unsigned char)v;
+        }
+    }
+    else if (v < 0x20000000 && width >= 4)
+    {
+        p[start] = (unsigned char)((v >> 24) | 0xC0);
+        p[start + 1] = (unsigned char)(v >> 16);
+        p[start + 2] = (unsigned char)(v >> 8);
+        p[start + 3] = (unsigned char)v;
+    }
+}
+
+static unsigned g_sigRows[64];          /* source metadata row counts */
+
+/* The DLL remaps tag 0 and 1 through the TypeDef map and tag 2 through the
+ * TypeSpec map (msdelta.dll.c:39479-39500, 39560-39574).  Out-of-range rows
+ * are left alone. */
+static unsigned sig_map_token(const CLIMAP *cm, unsigned v)
+{
+    unsigned tag = v & 3;
+    unsigned row = v >> 2;
+    unsigned tbl = (tag == 2) ? 27 : 2;
+
+    if (row >= g_sigRows[tbl])
+        return v;
+    return (rift_map_value(cm->tbl[tbl], cm->tblN[tbl], row) << 2) | tag;
+}
+
+static void cli_sig_type(const CLIMAP *cm, unsigned char *p, unsigned long n,
+                         unsigned long *pos, unsigned depth);
+
+static void cli_sig_ret_and_params(const CLIMAP *cm, unsigned char *p,
+                                   unsigned long n, unsigned long *pos,
+                                   unsigned params, unsigned depth)
+{
+    if (depth > 8) return;
+    cli_sig_type(cm, p, n, pos, depth + 1);      /* return type */
+    while (params-- && *pos < n)
+        cli_sig_type(cm, p, n, pos, depth + 1);
+}
+
+static void cli_sig_method(const CLIMAP *cm, unsigned char *p,
+                           unsigned long n, unsigned long *pos,
+                           unsigned depth)
+{
+    unsigned cc, gen = 0, params;
+    if (*pos >= n) return;
+    cc = p[(*pos)++];
+    if (cc & 0x10)
+        gen = sig_comp(p, n, pos);
+    params = sig_comp(p, n, pos);
+    (void)gen;
+    cli_sig_ret_and_params(cm, p, n, pos, params, depth + 1);
+}
+
+static void cli_sig_type(const CLIMAP *cm, unsigned char *p, unsigned long n,
+                         unsigned long *pos, unsigned depth)
+{
+    unsigned et, start;
+    unsigned long tokStart, tokEnd;
+    unsigned v;
+
+    if (depth > 12 || *pos >= n) return;
+    start = (*pos)++;
+    et = p[start];
+    switch (et)
+    {
+    case 0x11:                  /* ELEMENT_TYPE_VALUETYPE */
+    case 0x12:                  /* ELEMENT_TYPE_CLASS */
+    case 0x1F:                  /* ELEMENT_TYPE_CMOD_REQD */
+    case 0x20:                  /* ELEMENT_TYPE_CMOD_OPT */
+        tokStart = *pos;
+        v = sig_comp(p, n, pos);
+        tokEnd = *pos;
+        sig_put_comp(p, n, tokStart, tokEnd, sig_map_token(cm, v));
+        if (et == 0x1F || et == 0x20)
+            cli_sig_type(cm, p, n, pos, depth + 1);
+        break;
+    case 0x0F:                  /* PTR */
+    case 0x10:                  /* BYREF */
+    case 0x1D:                  /* SZARRAY */
+        cli_sig_type(cm, p, n, pos, depth + 1);
+        break;
+    case 0x13:                  /* VAR */
+    case 0x1E:                  /* MVAR */
+        sig_comp(p, n, pos);
+        break;
+    case 0x14:                  /* ARRAY */
+        {
+            unsigned rank, ns, nb, i;
+            cli_sig_type(cm, p, n, pos, depth + 1);
+            rank = sig_comp(p, n, pos);
+            ns = sig_comp(p, n, pos);
+            for (i = 0; i < ns && *pos < n; ++i) sig_comp(p, n, pos);
+            nb = sig_comp(p, n, pos);
+            for (i = 0; i < nb && *pos < n; ++i) sig_comp(p, n, pos);
+            (void)rank;
+        }
+        break;
+    case 0x15:                  /* GENERICINST: CLASS/VALUETYPE + argc + args */
+        cli_sig_type(cm, p, n, pos, depth + 1);
+        {
+            unsigned argc = sig_comp(p, n, pos), i;
+            for (i = 0; i < argc && *pos < n; ++i)
+                cli_sig_type(cm, p, n, pos, depth + 1);
+        }
+        break;
+    case 0x1B:                  /* FNPTR */
+        cli_sig_method(cm, p, n, pos, depth + 1);
+        break;
+    case 0x41:                  /* SENTINEL */
+    case 0x45:                  /* PINNED */
+        cli_sig_type(cm, p, n, pos, depth + 1);
+        break;
+    default:
+        break;                  /* void, primitives, string, object, typedbyref */
+    }
+}
+
+/* Rewrite the TypeDefOrRef tokens inside signature blobs. */
+static void pa30_transform_cli_blobs(unsigned char *buf, unsigned long len,
+                                     const CLIMETA *src, const CLIMAP *cm,
+                                     const CLIBLOBSET *blobs)
+{
+    unsigned i;
+    unsigned long base = src->blobOff;
+    unsigned long heapLen = src->blobLen;
+
+    if (!base || !heapLen || base + heapLen > len) return;
+    memcpy(g_sigRows, src->rows, sizeof(g_sigRows));
+    for (i = 0; i < blobs->n; ++i)
+    {
+        unsigned long off = blobs->a[i].off;
+        unsigned kind = blobs->a[i].kind;
+        unsigned long pos, blen, start, end;
+        unsigned char *p;
+
+        if (off >= heapLen) continue;
+        pos = base + off;
+        blen = sig_comp(buf, base + heapLen, &pos);
+        start = pos;
+        end = base + off + heapLen;      /* overwritten below */
+        {
+            unsigned long heapEnd = base + heapLen;
+            unsigned long q = pos;
+            /* the length prefix we just read gives the blob size */
+            (void)blen;
+            {
+                unsigned long lenStart = base + off;
+                unsigned long lpos = lenStart;
+                unsigned l = sig_comp(buf, heapEnd, &lpos);
+                end = lpos + l;
+                if (end > heapEnd) end = heapEnd;
+            }
+            if (end <= start || end > heapEnd) continue;
+            p = buf;
+        }
+        if (kind >= 1 && kind <= 5)
+        {
+            unsigned long q = start;
+            if (kind == 5)
+                cli_sig_type(cm, p, end, &q, 0);
+            else if (kind == 3)
+            {
+                if (q < end) ++q;        /* ELEMENT_TYPE_FIELD (0x06) */
+                cli_sig_type(cm, p, end, &q, 0);
+            }
+            else if (kind == 4)
+            {
+                unsigned params;
+                if (q < end) ++q;        /* ELEMENT_TYPE_PROPERTY (0x08) */
+                params = sig_comp(p, end, &q);
+                cli_sig_ret_and_params(cm, p, end, &q, params, 0);
+            }
+            else
+                cli_sig_method(cm, p, end, &q, 0);   /* 1 = MethodDef, 2 = MemberRef */
+        }
+        else if (kind == 9)
+        {
+            unsigned long q = start;
+            unsigned cc = (q < end) ? p[q++] : 0;
+            if ((cc & 0x0F) == 0x07)     /* LOCAL_SIG: count + types */
+            {
+                unsigned cnt = sig_comp(p, end, &q), i;
+                for (i = 0; i < cnt && q < end; ++i)
+                    cli_sig_type(cm, p, end, &q, 0);
+            }
+            else
+                cli_sig_method(cm, p, end, &q, 0);
+        }
+    }
+}
+
 /* RiftTransformCliMetadata: rewrite every heap index, table index, coded
  * index and method RVA of the CLI metadata through the CLI map, so the seed
  * lines up row-for-row with the target's metadata. */
 static void pa30_transform_cli_metadata(unsigned char *buf, unsigned long len,
                                         const CLIMETA *src, const CLIMETA *tgt,
                                         const CLIMAP *cm, const RIFTENTRY *rt,
-                                        unsigned rn)
+                                        unsigned rn, CLIBLOBSET *blobs)
 {
     unsigned t, c, row;
     int rvaWrite = 1;
@@ -2154,6 +2425,7 @@ static void pa30_transform_cli_metadata(unsigned char *buf, unsigned long len,
                     nv = rift_map_value(cm->heap[0], cm->heapN[0], v);
                     break;
                 case 4:
+                    cli_blob_collect(blobs, v, idx);
                     nv = rift_map_value(cm->heap[2], cm->heapN[2], v);
                     break;
                 case 5:
@@ -4441,6 +4713,8 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
                              * between them. */
                             if (!cliSrc.empty)
                             {
+                                CLIBLOBSET blobs;
+                                memset(&blobs, 0, sizeof(blobs));
                                 if (getenv("PA30_DEBUG")) fprintf(stderr, "SEED cli shared\n");
                                 pa30_transform_pointers(prepared, sourceLen, rt, rn,
                                     oldBase, peImageBase,
@@ -4461,7 +4735,11 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
                                 if (getenv("PA30_DEBUG")) fprintf(stderr, "SEED cli metadata\n");
                                 pa30_transform_cli_metadata(prepared, sourceLen,
                                                             &cliSrc, &cliTgt,
-                                                            &cliMap, rt, rn);
+                                                            &cliMap, rt, rn,
+                                                            &blobs);
+                                pa30_transform_cli_blobs(prepared, sourceLen,
+                                                         &cliSrc, &cliMap,
+                                                         &blobs);
                             }
                             else
                             {

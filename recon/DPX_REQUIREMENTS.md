@@ -1551,3 +1551,21 @@ Phase D is the genuine open-ended piece.
     TypeDefOrRef tokens inside those blobs is still missing, so the example
     delta is 417 bytes short of byte-exact.  Regressions (blob 0/1, PA19,
     XPRESS, LZX, LZMS, KB2959977 513/513, KB5131083 209/209) are unaffected.
+
+
+    **Signature-blob token remapping (part 55).**  The remaining seed
+    differences were inside the #Blob heap.  RiftTransformCliMetadata also
+    walks the signature blobs referenced by blob columns (MethodDef,
+    MemberRef, Field, Property, TypeSpec and StandAloneSig).  For each
+    ELEMENT_TYPE_CLASS / VALUETYPE / CMOD_REQD / CMOD_OPT it remaps the
+    following compressed TypeDefOrRef-style token: tag 0 and 1 go through
+    CliMap table 2, tag 2 through table 27, and the tag is preserved
+    (msdelta.dll.c:39479-39500, 39560-39574).  The walker understands the
+    ECMA-335 element types (arrays, generic instances, function pointers,
+    local signatures) so token positions are found without a linear scan.
+
+    The token lookup is a binary search (RiftTable::Map) with the DLL's
+    "below the first entry uses the last rift" quirk.  The example delta
+    improves from 417 to 174 differing output bytes; the remaining bytes are
+    a few signature forms whose parse still diverges from the DLL's
+    hand-written signature walker.  Regressions remain byte-exact.
