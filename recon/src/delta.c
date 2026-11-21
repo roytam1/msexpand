@@ -1344,30 +1344,190 @@ static void pa30_transform_pointers(unsigned char *buf, unsigned long len,
 /* RiftTransformDisasmAmd64: rewrite RIP-relative displacements in x64 code
  * so they still point at the same section after the rebase.  We recognise
  * the common ModRM=00/rm=101 encodings instead of running a full decoder. */
-static int pa30_amd64_modrm_ok(const unsigned char *buf, unsigned long p,
-                               unsigned long raw)
+static int pa30_x64_decode(const unsigned char *start,
+                           const unsigned char *end, int *ripOff)
 {
-    unsigned char op;
-    if (p < raw + 1) return 0;
-    op = buf[p - 1];
-    if (op >= 0x40 && op <= 0x4F && p >= raw + 2)
-        op = buf[p - 2];              /* REX prefix before the opcode */
-    switch (op)
+    const unsigned char *p = start;
+    int opsz16 = 0, rexw = 0;
+    int hasModrm = 0, imm = 0;
+    unsigned op;
+
+    *ripOff = -1;
+    for (;;)
     {
-    case 0x01: case 0x03: case 0x09: case 0x0B: case 0x11: case 0x13:
-    case 0x19: case 0x1B: case 0x21: case 0x23: case 0x29: case 0x2B:
-    case 0x31: case 0x33: case 0x38: case 0x39: case 0x3B: case 0x85:
-    case 0x87: case 0x8A: case 0x8B: case 0x88: case 0x89: case 0x8D:
-    case 0x83: case 0xC6: case 0xC7: case 0xD0: case 0xD1: case 0xD2:
-    case 0xD3: case 0xF6: case 0xF7: case 0xFE: case 0xFF:
-        return 1;
-    case 0x0F:
-        /* Two-byte opcode: accept when a REX prefix or a second opcode byte
-         * is present, as in 48 0F 43 0D (cmov). */
-        return (buf[p - 2] >= 0x40 && buf[p - 2] <= 0x4F) ||
-               (p >= raw + 2 && buf[p - 2] != 0x0F);
+        unsigned c;
+        if (p >= end) return 0;
+        c = *p;
+        if (c == 0x66) { opsz16 = 1; ++p; continue; }
+        if (c == 0x67 || c == 0xF0 || c == 0xF2 || c == 0xF3 ||
+            c == 0x2E || c == 0x36 || c == 0x3E || c == 0x26 ||
+            c == 0x64 || c == 0x65) { ++p; continue; }
+        break;
     }
-    return 0;
+    if (p < end && (*p & 0xF0) == 0x40)
+    {
+        rexw = (*p & 0x08) != 0;
+        ++p;
+    }
+    if (p >= end) return 0;
+    op = *p++;
+
+    if (op == 0x0F)
+    {
+        unsigned op2;
+        if (p >= end) return 0;
+        op2 = *p++;
+        if (op2 >= 0x80 && op2 <= 0x8F) imm = opsz16 ? 2 : 4;
+        else
+        {
+            switch (op2)
+            {
+            case 0x05: case 0x06: case 0x07: case 0x08: case 0x09:
+            case 0x0B: case 0x0E: case 0x30: case 0x31: case 0x32:
+            case 0x33: case 0x34: case 0x35: case 0x37: case 0x77:
+            case 0xA0: case 0xA1: case 0xA2: case 0xA8: case 0xA9:
+            case 0xAA: case 0xC8: case 0xC9: case 0xCA: case 0xCB:
+            case 0xCC: case 0xCD: case 0xCE: case 0xCF: case 0xFF:
+                break;
+            default:
+                hasModrm = 1;
+                switch (op2)
+                {
+                case 0x70: case 0x71: case 0x72: case 0x73:
+                case 0xA4: case 0xAC: case 0xBA: case 0xC2:
+                case 0xC4: case 0xC5: case 0xC6:
+                    imm = 1;
+                    break;
+                }
+                break;
+            }
+        }
+    }
+    else if (op == 0xC4 || op == 0xC5 || op == 0x62)
+    {
+        int n = (op == 0xC5) ? 1 : (op == 0xC4) ? 2 : 3;
+        while (n-- > 0)
+        {
+            if (p >= end) return 0;
+            ++p;
+        }
+        if (p >= end) return 0;
+        ++p;
+        hasModrm = 1;
+    }
+    else
+    {
+        switch (op)
+        {
+        case 0x00: case 0x01: case 0x02: case 0x03:
+        case 0x08: case 0x09: case 0x0A: case 0x0B:
+        case 0x10: case 0x11: case 0x12: case 0x13:
+        case 0x18: case 0x19: case 0x1A: case 0x1B:
+        case 0x20: case 0x21: case 0x22: case 0x23:
+        case 0x28: case 0x29: case 0x2A: case 0x2B:
+        case 0x30: case 0x31: case 0x32: case 0x33:
+        case 0x38: case 0x39: case 0x3A: case 0x3B:
+        case 0x62: case 0x63:
+        case 0x84: case 0x85: case 0x86: case 0x87:
+        case 0x88: case 0x89: case 0x8A: case 0x8B:
+        case 0x8C: case 0x8D: case 0x8E: case 0x8F:
+        case 0xD0: case 0xD1: case 0xD2: case 0xD3:
+        case 0xD8: case 0xD9: case 0xDA: case 0xDB:
+        case 0xDC: case 0xDD: case 0xDE: case 0xDF:
+        case 0xFE: case 0xFF:
+            hasModrm = 1;
+            break;
+        case 0x69: case 0x6B:
+            hasModrm = 1; imm = (op == 0x6B) ? 1 : (opsz16 ? 2 : 4);
+            break;
+        case 0x80: case 0x82: case 0x83:
+            hasModrm = 1; imm = 1;
+            break;
+        case 0x81:
+            hasModrm = 1; imm = opsz16 ? 2 : 4;
+            break;
+        case 0xC0: case 0xC1: case 0xC6:
+            hasModrm = 1; imm = 1;
+            break;
+        case 0xC7:
+            hasModrm = 1; imm = opsz16 ? 2 : 4;
+            break;
+        case 0xF6: case 0xF7:
+            hasModrm = 2;               /* imm depends on the reg field */
+            break;
+        case 0x70: case 0x71: case 0x72: case 0x73:
+        case 0x74: case 0x75: case 0x76: case 0x77:
+        case 0x78: case 0x79: case 0x7A: case 0x7B:
+        case 0x7C: case 0x7D: case 0x7E: case 0x7F:
+        case 0xE0: case 0xE1: case 0xE2: case 0xE3:
+        case 0xEB:
+            imm = 1;
+            break;
+        case 0x04: case 0x0C: case 0x14: case 0x1C:
+        case 0x24: case 0x2C: case 0x34: case 0x3C:
+        case 0x6A: case 0xA8: case 0xCD:
+        case 0xE4: case 0xE5: case 0xE6: case 0xE7:
+        case 0xD4: case 0xD5:
+            imm = 1;
+            break;
+        case 0x05: case 0x0D: case 0x15: case 0x1D:
+        case 0x25: case 0x2D: case 0x35: case 0x3D:
+        case 0x68: case 0xA9: case 0xE8: case 0xE9:
+            imm = opsz16 ? 2 : 4;
+            break;
+        case 0xB0: case 0xB1: case 0xB2: case 0xB3:
+        case 0xB4: case 0xB5: case 0xB6: case 0xB7:
+            imm = 1;
+            break;
+        case 0xB8: case 0xB9: case 0xBA: case 0xBB:
+        case 0xBC: case 0xBD: case 0xBE: case 0xBF:
+            imm = rexw ? 8 : (opsz16 ? 2 : 4);
+            break;
+        case 0xC2: case 0xCA:
+            imm = 2;
+            break;
+        case 0xC8:
+            imm = 3;
+            break;
+        case 0xA0: case 0xA1: case 0xA2: case 0xA3:
+            imm = rexw ? 8 : 4;
+            break;
+        default:
+            break;
+        }
+    }
+
+    if (hasModrm)
+    {
+        unsigned modrm, mod, rm;
+        if (p >= end) return 0;
+        modrm = *p++;
+        mod = modrm >> 6;
+        rm = modrm & 7;
+        if (mod != 3)
+        {
+            if (rm == 4)
+            {
+                unsigned sib;
+                if (p >= end) return 0;
+                sib = *p++;
+                if (mod == 0 && (sib & 7) == 5) p += 4;
+            }
+            else if (mod == 0 && rm == 5)
+            {
+                *ripOff = (int)(p - start);
+                p += 4;
+            }
+            if (mod == 1) p += 1;
+            else if (mod == 2) p += 4;
+        }
+        if (hasModrm == 2)
+            imm = ((modrm >> 3) & 7) <= 1 ? ((op == 0xF7) ? (opsz16 ? 2 : 4) : 1)
+                                          : 0;
+    }
+    p += imm;
+    if (p > end) return 0;
+    return (int)(p - start);
 }
 
 static void pa30_transform_amd64_rip(unsigned char *buf, unsigned long len,
@@ -1396,32 +1556,43 @@ static void pa30_transform_amd64_rip(unsigned char *buf, unsigned long len,
         if (vs > rs) vs = rs;
         if (vs < 8 || raw + vs > len) continue;
         span = raw + vs;
-        for (p = raw + 1; p + 4 < span; ++p)
+        p = raw;
+        while (p < span)
         {
-            long rel, siteRVA, targetRVA, mappedSite, mappedTarget, newrel;
-            unsigned long to;
-            if ((buf[p] & 0xC7) != 0x05) continue;    /* mod=00, rm=101 */
-            if (!pa30_amd64_modrm_ok(buf, p, raw)) continue;
-            if (hint && (hint[p + 1] | hint[p + 2] |
-                         hint[p + 3] | hint[p + 4]) & 0x01) continue;
-            rel = (long)rd32(buf + p + 1);
-            siteRVA = (long)(va + (p - raw) + 5);
-            targetRVA = siteRVA + rel;
-            if (targetRVA < 0 || (unsigned long)targetRVA >= sizeOfImage)
-                continue;
-            to = pa30_rva_off(buf, len, (unsigned long)targetRVA);
-            if (to != 0xFFFFFFFFUL && to >= len) continue;
-            mappedSite = (long)pa30_map_rva(rt, rn, (unsigned long)siteRVA);
-            mappedTarget = (long)pa30_map_rva(rt, rn,
-                                              (unsigned long)targetRVA);
-            newrel = mappedTarget - mappedSite;
-            if (newrel != rel)
+            int rip = -1;
+            int n = pa30_x64_decode(buf + p, buf + span, &rip);
+            if (n <= 0) { ++p; continue; }
+            if (rip >= 0 && p + (unsigned long)rip + 4 <= span)
             {
-                pa30_set_u32(buf, p + 1, (unsigned long)newrel);
-                if (hint)
-                    memset((void *)(hint + p + 1), 0x01, 4);
+                unsigned long f = p + (unsigned long)rip;
+                long rel, siteRVA, targetRVA, mappedSite, mappedTarget, newrel;
+                unsigned long to;
+                rel = (long)rd32(buf + f);
+                siteRVA = (long)(va + (f - raw) + 4);
+                targetRVA = siteRVA + rel;
+                if (targetRVA >= 0 &&
+                    (unsigned long)targetRVA < sizeOfImage &&
+                    !(hint && (hint[f] | hint[f + 1] |
+                               hint[f + 2] | hint[f + 3]) & 0x01))
+                {
+                    to = pa30_rva_off(buf, len, (unsigned long)targetRVA);
+                    if (!(to != 0xFFFFFFFFUL && to >= len))
+                    {
+                        mappedSite = (long)pa30_map_rva(rt, rn,
+                                                        (unsigned long)siteRVA);
+                        mappedTarget = (long)pa30_map_rva(rt, rn,
+                                                   (unsigned long)targetRVA);
+                        newrel = mappedTarget - mappedSite;
+                        if (newrel != rel)
+                        {
+                            pa30_set_u32(buf, f, (unsigned long)newrel);
+                            if (hint)
+                                memset((void *)(hint + f), 0x01, 4);
+                        }
+                    }
+                }
             }
-            p += 4;
+            p += (unsigned long)n;
         }
     }
 }
