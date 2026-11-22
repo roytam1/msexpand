@@ -3289,11 +3289,6 @@ static void pa30_transform_relcalls(unsigned char *buf, unsigned long len,
             long rel, newrel, siteRVA, targetRVA, mappedSite, mappedTarget;
             unsigned long to;
             if (buf[p] != 0xE8) continue;
-            if (p >= raw + 2 && (buf[p - 1] & 0xC7) == 0x45 &&
-                (buf[p - 2] & 0xC0) != 0xC0 && p + 1 < span &&
-                buf[p + 1] != 0xE8 && buf[p + 1] != 0xE9 &&
-                buf[p + 1] != 0x0F)
-                continue;
             if (hint && (hint[p] | hint[p + 1] | hint[p + 2] |
                          hint[p + 3] | hint[p + 4]) & 0x01)
                 continue;
@@ -3404,11 +3399,6 @@ static void pa30_transform_reljmps(unsigned char *buf, unsigned long len,
         {
             long rel, newrel, siteRVA, targetRVA, mappedSite, mappedTarget;
             unsigned long to, opLen = 5, hintAt = p;
-            if (p >= raw + 2 && (buf[p - 1] & 0xC7) == 0x45 &&
-                (buf[p - 2] & 0xC0) != 0xC0 && p + 1 < span &&
-                buf[p + 1] != 0xE8 && buf[p + 1] != 0xE9 &&
-                buf[p + 1] != 0x0F)
-                continue;
             if (buf[p] == 0x0F && p + 6 <= span &&
                 (buf[p + 1] & 0xF0) == 0x80)
             {
