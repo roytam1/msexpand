@@ -3065,7 +3065,6 @@ static void pa30_transform_pdata_amd64(unsigned char *buf, unsigned long len,
 static void pa30_mark_import_section(unsigned char *buf, unsigned long len)
 {
     unsigned long lfa, opt, nrva, imp, nsec, sh, s;
-    int cliImage = 0;
     if (len < 0x40) return;
     lfa = rd32(buf + 0x3C);
     if (lfa + 24 > len || memcmp(buf + lfa, "PE\0\0", 4)) return;
@@ -3075,10 +3074,6 @@ static void pa30_mark_import_section(unsigned char *buf, unsigned long len)
     imp = rd32(buf + PA30_DD(buf, opt) + 8);   /* Import Table RVA (data dir 1) */
     if (getenv("PA30_DEBUG")) fprintf(stderr, "IMPORT RVA=%08lX\n", imp);
     if (!imp) return;
-    /* For CLI images the DLL clears the writable bit on the section holding
-     * the imports (it is already set in some upstream assemblies). */
-    if (rd32(buf + PA30_DD(buf, opt) + 14 * 8) != 0)
-        cliImage = 1;
     nrva = rd32(buf + opt + 0x38);      /* SizeOfImage */
     sh = opt + rd16(buf + lfa + 20);
     for (s = 0; s < nsec; ++s)
@@ -3092,13 +3087,25 @@ static void pa30_mark_import_section(unsigned char *buf, unsigned long len)
         if (imp >= va && imp < va + (vs ? vs : rs))
         {
             ch = rd32(buf + o + 36);
-            if (cliImage)
+            if (rd16(buf + opt) != 0x20B)
             {
-                ch &= ~0x80000000UL;
-            }
-            else if (rd16(buf + opt) != 0x20B && !(ch & 0x80000000UL))
-            {
-                ch |= 0x80000000UL;
+                /* UnbindPortableExecutable makes a section literally named
+                 * ".idata" writable, but for a native CLR image whose imports
+                 * live at the end of .text the DLL removes the upstream
+                 * write bit instead. */
+                int idata =
+                    (buf[o] | 0x20) == '.' &&
+                    (buf[o + 1] | 0x20) == 'i' &&
+                    (buf[o + 2] | 0x20) == 'd' &&
+                    (buf[o + 3] | 0x20) == 'a' &&
+                    (buf[o + 4] | 0x20) == 't' &&
+                    (buf[o + 5] | 0x20) == 'a' &&
+                    (buf[o + 6] == 0 || buf[o + 6] == ' ') &&
+                    (buf[o + 7] == 0 || buf[o + 7] == ' ');
+                if (idata && !(ch & 0x80000000UL))
+                    ch |= 0x80000000UL;
+                else if (!idata && (ch & 0x80000000UL))
+                    ch &= ~0x80000000UL;
             }
             buf[o + 36] = (unsigned char)(ch & 0xFF);
                 buf[o + 37] = (unsigned char)((ch >> 8) & 0xFF);

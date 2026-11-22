@@ -1594,3 +1594,17 @@ Phase D is the genuine open-ended piece.
     byte-exact: KB2959977 513/513, KB5131083 209/209.  The remaining 85
     targets are native CLR/PDB-style images whose seed still differs in a
     handful of .text/.pdata pointer cells, plus a few CLI IL token forms.
+
+    **Import-section characteristics (part 57).**  Isolated the single-byte
+    seed mismatches in `presentationnative_v0400.dll`, `peverify.dll`,
+    `mscorpe.dll`, `vbc.exe` and the two `system.data.dll` variants: all were
+    the high byte of the first section's Characteristics (0xE0 vs 0x60,
+    i.e. `IMAGE_SCN_MEM_WRITE` on `.text`).  The DLL's
+    `UnbindPortableExecutable` only makes a section *literally named* `.idata`
+    writable; for native CLR images whose imports live at the end of `.text`
+    it removes an upstream write bit instead.  `pa30_mark_import_section` now
+    follows that rule instead of keying solely on the import RVA.  W11 native
+    verification rises to **2653/2732**; KB2959977 513/513 and KB5131083
+    209/209 remain byte-exact.  The remaining gaps are decoder-history edge
+    cases (e.g. `corperfmonext.dll` has an identical seed but one wrong match
+    byte) and CLI IL-token forms.
