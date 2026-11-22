@@ -2267,16 +2267,18 @@ static unsigned sig_map_token(const CLIMAP *cm, unsigned v)
 }
 
 static void cli_sig_type(const CLIMAP *cm, unsigned char *p, unsigned long n,
-                         unsigned long *pos, unsigned depth);
+                         unsigned long *pos, unsigned depth, int doMap);
 
 static void cli_sig_ret_and_params(const CLIMAP *cm, unsigned char *p,
                                    unsigned long n, unsigned long *pos,
                                    unsigned params, unsigned depth)
 {
     if (depth > 8) return;
-    cli_sig_type(cm, p, n, pos, depth + 1);      /* return type */
+    /* The DLL's signature walker only remaps tokens of the first type it
+     * parses (the return type); later parameter types are just skipped. */
+    cli_sig_type(cm, p, n, pos, depth + 1, 1);
     while (params-- && *pos < n)
-        cli_sig_type(cm, p, n, pos, depth + 1);
+        cli_sig_type(cm, p, n, pos, depth + 1, 0);
 }
 
 static void cli_sig_method(const CLIMAP *cm, unsigned char *p,
@@ -2294,7 +2296,7 @@ static void cli_sig_method(const CLIMAP *cm, unsigned char *p,
 }
 
 static void cli_sig_type(const CLIMAP *cm, unsigned char *p, unsigned long n,
-                         unsigned long *pos, unsigned depth)
+                         unsigned long *pos, unsigned depth, int doMap)
 {
     unsigned et, start;
     unsigned long tokStart, tokEnd;
@@ -2312,14 +2314,15 @@ static void cli_sig_type(const CLIMAP *cm, unsigned char *p, unsigned long n,
         tokStart = *pos;
         v = sig_comp(p, n, pos);
         tokEnd = *pos;
-        sig_put_comp(p, n, tokStart, tokEnd, sig_map_token(cm, v));
+        if (doMap)
+            sig_put_comp(p, n, tokStart, tokEnd, sig_map_token(cm, v));
         if (et == 0x1F || et == 0x20)
-            cli_sig_type(cm, p, n, pos, depth + 1);
+            cli_sig_type(cm, p, n, pos, depth + 1, doMap);
         break;
     case 0x0F:                  /* PTR */
     case 0x10:                  /* BYREF */
     case 0x1D:                  /* SZARRAY */
-        cli_sig_type(cm, p, n, pos, depth + 1);
+        cli_sig_type(cm, p, n, pos, depth + 1, doMap);
         break;
     case 0x13:                  /* VAR */
     case 0x1E:                  /* MVAR */
@@ -2328,7 +2331,7 @@ static void cli_sig_type(const CLIMAP *cm, unsigned char *p, unsigned long n,
     case 0x14:                  /* ARRAY */
         {
             unsigned rank, ns, nb, i;
-            cli_sig_type(cm, p, n, pos, depth + 1);
+            cli_sig_type(cm, p, n, pos, depth + 1, doMap);
             rank = sig_comp(p, n, pos);
             ns = sig_comp(p, n, pos);
             for (i = 0; i < ns && *pos < n; ++i) sig_comp(p, n, pos);
@@ -2338,11 +2341,11 @@ static void cli_sig_type(const CLIMAP *cm, unsigned char *p, unsigned long n,
         }
         break;
     case 0x15:                  /* GENERICINST: CLASS/VALUETYPE + argc + args */
-        cli_sig_type(cm, p, n, pos, depth + 1);
+        cli_sig_type(cm, p, n, pos, depth + 1, doMap);
         {
             unsigned argc = sig_comp(p, n, pos), i;
             for (i = 0; i < argc && *pos < n; ++i)
-                cli_sig_type(cm, p, n, pos, depth + 1);
+                cli_sig_type(cm, p, n, pos, depth + 1, doMap);
         }
         break;
     case 0x1B:                  /* FNPTR */
@@ -2350,7 +2353,7 @@ static void cli_sig_type(const CLIMAP *cm, unsigned char *p, unsigned long n,
         break;
     case 0x41:                  /* SENTINEL */
     case 0x45:                  /* PINNED */
-        cli_sig_type(cm, p, n, pos, depth + 1);
+        cli_sig_type(cm, p, n, pos, depth + 1, doMap);
         break;
     default:
         break;                  /* void, primitives, string, object, typedbyref */
@@ -2375,6 +2378,8 @@ static void pa30_transform_cli_blobs(unsigned char *buf, unsigned long len,
         unsigned long pos, blen, start, end;
         unsigned char *p;
 
+        if (getenv("PA30_BLOBDBG")) fprintf(stderr,
+            "BLOB off=%u kind=%u\n", off, kind);
         if (off >= heapLen) continue;
         pos = base + off;
         blen = sig_comp(buf, base + heapLen, &pos);
@@ -2399,11 +2404,11 @@ static void pa30_transform_cli_blobs(unsigned char *buf, unsigned long len,
         {
             unsigned long q = start;
             if (kind == 5)
-                cli_sig_type(cm, p, end, &q, 0);
+                cli_sig_type(cm, p, end, &q, 0, 1);
             else if (kind == 3)
             {
                 if (q < end) ++q;        /* ELEMENT_TYPE_FIELD (0x06) */
-                cli_sig_type(cm, p, end, &q, 0);
+                cli_sig_type(cm, p, end, &q, 0, 1);
             }
             else if (kind == 4)
             {
@@ -2423,7 +2428,7 @@ static void pa30_transform_cli_blobs(unsigned char *buf, unsigned long len,
             {
                 unsigned cnt = sig_comp(p, end, &q), i;
                 for (i = 0; i < cnt && q < end; ++i)
-                    cli_sig_type(cm, p, end, &q, 0);
+                    cli_sig_type(cm, p, end, &q, 0, i == 0);
             }
             else
                 cli_sig_method(cm, p, end, &q, 0);
