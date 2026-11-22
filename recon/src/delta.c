@@ -3050,6 +3050,7 @@ static void pa30_transform_pdata_amd64(unsigned char *buf, unsigned long len,
 static void pa30_mark_import_section(unsigned char *buf, unsigned long len)
 {
     unsigned long lfa, opt, nrva, imp, nsec, sh, s;
+    int cliImage = 0;
     if (len < 0x40) return;
     lfa = rd32(buf + 0x3C);
     if (lfa + 24 > len || memcmp(buf + lfa, "PE\0\0", 4)) return;
@@ -3059,6 +3060,10 @@ static void pa30_mark_import_section(unsigned char *buf, unsigned long len)
     imp = rd32(buf + PA30_DD(buf, opt) + 8);   /* Import Table RVA (data dir 1) */
     if (getenv("PA30_DEBUG")) fprintf(stderr, "IMPORT RVA=%08lX\n", imp);
     if (!imp) return;
+    /* For CLI images the DLL clears the writable bit on the section holding
+     * the imports (it is already set in some upstream assemblies). */
+    if (rd32(buf + PA30_DD(buf, opt) + 14 * 8) != 0)
+        cliImage = 1;
     nrva = rd32(buf + opt + 0x38);      /* SizeOfImage */
     sh = opt + rd16(buf + lfa + 20);
     for (s = 0; s < nsec; ++s)
@@ -3072,15 +3077,18 @@ static void pa30_mark_import_section(unsigned char *buf, unsigned long len)
         if (imp >= va && imp < va + (vs ? vs : rs))
         {
             ch = rd32(buf + o + 36);
-            /* The DLL only makes the section writable for PE32 images. */
-            if (rd16(buf + opt) != 0x20B && !(ch & 0x80000000UL))
+            if (cliImage)
+            {
+                ch &= ~0x80000000UL;
+            }
+            else if (rd16(buf + opt) != 0x20B && !(ch & 0x80000000UL))
             {
                 ch |= 0x80000000UL;
-                buf[o + 36] = (unsigned char)(ch & 0xFF);
+            }
+            buf[o + 36] = (unsigned char)(ch & 0xFF);
                 buf[o + 37] = (unsigned char)((ch >> 8) & 0xFF);
                 buf[o + 38] = (unsigned char)((ch >> 16) & 0xFF);
                 buf[o + 39] = (unsigned char)((ch >> 24) & 0xFF);
-            }
             break;
         }
     }
