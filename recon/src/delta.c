@@ -3049,13 +3049,37 @@ static void pa30_transform_pdata_amd64(unsigned char *buf, unsigned long len,
     end = off + es - 12;
     for (; off <= end; off += 12)
     {
-        unsigned k;
+        unsigned k, uwOrig;
+        uwOrig = rd32(buf + off + 8);
         for (k = 0; k < 3; ++k)
         {
             unsigned long v = rd32(buf + off + 4 * k);
             if (!v || v >= sizeOfImage) continue;
             pa30_set_u32(buf, off + 4 * k,
                          (unsigned long)pa30_map_rva(rt, rn, (long)v));
+        }
+        /* RiftTransformPdataAmd64 also remaps the exception-handler RVA that
+         * follows the unwind codes when the UNWIND_INFO has an EH flag.  The
+         * DLL locates UNWIND_INFO with the original, not yet mapped, RVA. */
+        {
+            unsigned long uw = uwOrig;
+            if (uw && uw < sizeOfImage)
+            {
+                unsigned long uo = pa30_rva_off(buf, len, uw);
+                if (uo != 0xFFFFFFFFUL && uo + 4 <= len &&
+                    (buf[uo] & 0x38) != 0)
+                {
+                    unsigned long codes = buf[uo + 2];
+                    unsigned long hop = 4 * ((codes + 1) >> 1) + 4;
+                    if (uo + hop + 4 <= len)
+                    {
+                        unsigned long v = rd32(buf + uo + hop);
+                        pa30_set_u32(buf, uo + hop,
+                                     (unsigned long)pa30_map_rva(rt, rn,
+                                                                 (long)v));
+                    }
+                }
+            }
         }
     }
 }

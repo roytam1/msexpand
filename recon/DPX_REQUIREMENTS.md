@@ -1608,3 +1608,14 @@ Phase D is the genuine open-ended piece.
     209/209 remain byte-exact.  The remaining gaps are decoder-history edge
     cases (e.g. `corperfmonext.dll` has an identical seed but one wrong match
     byte) and CLI IL-token forms.
+
+    **UNWIND_INFO exception handlers (part 58).**  Watchpointing the DLL's
+    seed at the first remaining seed difference in `amd64_netfx4-corperfmonext`
+    traced the write to `RiftTransformPdataAmd64::Transform`.  Besides the
+    three RUNTIME_FUNCTION RVAs, the DLL remaps the exception-handler RVA that
+    follows the unwind codes when `UNWIND_INFO.Flags & 0x38` is set.  Our
+    pdata transform only handled the three record fields.  Added the handler
+    pass, using the *original* UnwindInfoAddress to locate the UNWIND_INFO
+    (the DLL maps that field only after the handler step).  W11 native
+    verification rises to **2668/2732**; KB2959977 513/513 and KB5131083
+    209/209 remain byte-exact.
