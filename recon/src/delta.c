@@ -1564,6 +1564,13 @@ static void cli_meta_init(CLIMETA *m, const unsigned char *buf,
             {
                 if (q + 4 <= bufLen) m->rows[k] = rd32(buf + q);
                 q += 4;
+                if (m->rows[k] > 0x100000UL)
+                {
+                    memset(m->rows, 0, sizeof(m->rows));
+                    m->mask = 0;
+                    m->empty = 1;
+                    return;
+                }
             }
     }
     m->empty = !(m->d3 | m->d4 | m->d5 | m->nStream | m->strmTable |
@@ -1647,7 +1654,17 @@ static void cli_meta_from_bits(CLIMETA *m, BITR *br)
         m->mask = (unsigned __int64)br_read(br, 32) |
                   ((unsigned __int64)br_read(br, 32) << 32);
         for (k = 0; k < 64; ++k)
-            if ((m->mask >> k) & 1) m->rows[k] = br_read(br, 32);
+            if ((m->mask >> k) & 1)
+            {
+                m->rows[k] = br_read(br, 32);
+                if (m->rows[k] > 0x100000UL)
+                {
+                    memset(m->rows, 0, sizeof(m->rows));
+                    m->mask = 0;
+                    m->empty = 1;
+                    return;
+                }
+            }
     }
     m->empty = !(m->d3 | m->d4 | m->d5 | m->nStream | m->strmTable |
                  m->stringsOff | m->stringsLen | m->usOff | m->usLen |
@@ -2031,7 +2048,8 @@ static void pa30_transform_cli_disasm(unsigned char *buf, unsigned long len,
     unsigned long row;
     unsigned methods = 0, tokens = 0, toks = 0, insns = 0;
 
-    if (!meta || meta->empty || meta->rows[6] == 0)
+    if (!meta || meta->empty || meta->rows[6] == 0 ||
+        meta->rows[6] > 0x100000UL)
     {
         if (getenv("PA30_DEBUG")) fprintf(stderr,
             "CLITR skip empty=%d rows6=%u\n", meta ? meta->empty : -1,
@@ -2504,6 +2522,10 @@ static int cli_compression_rift(RIFTENTRY **out, unsigned *outn,
     memset(&o, 0, sizeof(o));
     if (src->empty || tgt->empty)
         return 0;
+    if (getenv("PA30_PHASE")) fprintf(stderr,
+        "CLIMAP heaps=%u,%u,%u,%u srcRows6=%u tgtRows6=%u\n",
+        cm->heapN[0], cm->heapN[1], cm->heapN[2], cm->heapN[3],
+        src->rows[6], tgt->rows[6]); fflush(stderr);
     cli_add_heap(&o, (__int64)src->stringsOff, (__int64)tgt->stringsOff,
                  cm->heap[0], cm->heapN[0]);
     cli_add_heap(&o, (__int64)src->usOff, (__int64)tgt->usOff,
@@ -2515,7 +2537,12 @@ static int cli_compression_rift(RIFTENTRY **out, unsigned *outn,
     for (t = 0; t < 64; ++t)
     {
         unsigned c, same;
-        if (!src->rows[t] || !tgt->rows[t]) continue;
+        if (!src->rows[t] || !tgt->rows[t] ||
+            src->rows[t] > 0x100000UL || tgt->rows[t] > 0x100000UL)
+            continue;
+        if (getenv("PA30_PHASE")) fprintf(stderr,
+            "CLITBL t=%u srows=%u trows=%u mapn=%u\n",
+            t, src->rows[t], tgt->rows[t], cm->tblN[t]); fflush(stderr);
         same = (src->stride[t] == tgt->stride[t]);
         for (c = 0; same && c < g_cliNCols[t]; ++c)
             if (src->is4[t][c] != tgt->is4[t][c]) same = 0;
@@ -4391,7 +4418,7 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
     int doPhase = getenv("PA30_PHASE") != NULL;
     if (doPhase) tStart = (double)clock() / CLOCKS_PER_SEC;
 #define PHASE(tag) if (doPhase) { double t = (double)clock()/CLOCKS_PER_SEC; \
-    fprintf(stderr, "PHASE %s %.3f\n", tag, t - tPhase); tPhase = t; }
+    fprintf(stderr, "PHASE %s %.3f\n", tag, t - tPhase); fflush(stderr); tPhase = t; }
 
     *out = NULL;
     *outLen = 0;
@@ -4626,6 +4653,8 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
                     (size_t)(total ? total : 1) * sizeof(*comb));
                 RIFTENTRY *sortTmp = (RIFTENTRY *)malloc(
                     (size_t)(total ? total : 1) * sizeof(*sortTmp));
+                if (getenv("PA30_PHASE")) fprintf(stderr,
+                    "CLIRIFT crn=%u oriftN=%u total=%u\n", crn, oriftN, total); fflush(stderr);
                 if (comb && sortTmp)
                 {
                     unsigned j, w, k;
