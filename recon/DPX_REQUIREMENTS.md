@@ -1630,3 +1630,14 @@ Phase D is the genuine open-ended piece.
     far branch (the DLL does not check it for short jumps).  W11 native
     verification rises to **2675/2732**; KB2959977 513/513 and KB5131083
     209/209 remain byte-exact.
+
+    **False jump opcodes in call operands (part 60).**  The seed of
+    `x86_netfx-mscordacwks.dll` (patch 25) had four clusters where our
+    relative-jump pass treated an E9 / 0F8x byte *inside a rewritten E8
+    call's rel32* as a real opcode and rewrote it again.  The DLL's hint
+    map marks those operand bytes.  Marking hint bits ourselves regressed
+    real jumps that happened to land in a marked region (`x86_netfx4-clr.dll`),
+    so the jump pass now compares the opcode bytes with the original source:
+    an E9 / 0F8x byte that was not a jump in the source image is skipped.
+    W11 native verification rises to **2676/2732**; KB2959977 513/513 and
+    KB5131083 209/209 remain byte-exact.

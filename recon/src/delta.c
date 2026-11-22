@@ -3418,7 +3418,8 @@ static void pa30_transform_exports(unsigned char *buf, unsigned long len,
 static void pa30_transform_reljmps(unsigned char *buf, unsigned long len,
                                    const RIFTENTRY *rt, unsigned rn,
                                    const unsigned char *hint,
-                                   unsigned long sizeOfImage)
+                                   unsigned long sizeOfImage,
+                                   const unsigned char *orig)
 {
     unsigned long pe, opt, sh, nsec, s;
     if (len < 0x40) return;
@@ -3451,6 +3452,15 @@ static void pa30_transform_reljmps(unsigned char *buf, unsigned long len,
                 opLen = 6; hintAt = p + 1;
             }
             else if (buf[p] != 0xE9)
+                continue;
+            /* Do not treat an E9 / 0F8x byte that appeared inside a rewritten
+             * E8 call's rel32 as an opcode: it was not a jump in the source
+             * image, unlike a genuine jump at the same file offset. */
+            if (buf[p] == 0xE9)
+            {
+                if (orig[p] != 0xE9) continue;
+            }
+            else if (orig[p] != 0x0F || (orig[p + 1] & 0xF0) != 0x80)
                 continue;
             if (hint && (hint[hintAt] | hint[hintAt + 1] |
                          hint[hintAt + 2] | hint[hintAt + 3] |
@@ -4954,7 +4964,8 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
                             if (getenv("PA30_DEBUG")) fprintf(stderr, "SEED reljmps\n");
                             if (rd16(prepared + lfa + 24) == 0x10B)
                             pa30_transform_reljmps(prepared, sourceLen, rt,
-                                                   rn, hintBuf, sizeOfImage);
+                                                   rn, hintBuf, sizeOfImage,
+                                                   source);
                             PHASE("nat-reljmps");
                             if (getenv("PA30_DEBUG")) fprintf(stderr, "SEED exports\n");
                             pa30_transform_exports(prepared, sourceLen,
