@@ -4615,7 +4615,7 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
                 for (k = 0; k < n3; ++k)
                 {
                     if (t3[k].left <= 0) continue;
-                    if (w && (t3[w - 1].right - t3[w - 1].left) ==
+                        if (w && (t3[w - 1].right - t3[w - 1].left) ==
                              (t3[k].right - t3[k].left)) continue;
                     t3[w++] = t3[k];
                 }
@@ -4890,10 +4890,12 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
                                                      rt, rn);
                             PHASE("nat-imports");
                             if (getenv("PA30_DEBUG")) fprintf(stderr, "SEED relcalls\n");
+                            if (rd16(prepared + lfa + 24) == 0x10B)
                             pa30_transform_relcalls(prepared, sourceLen, rt,
                                                     rn, hintBuf, sizeOfImage);
                             PHASE("nat-relcalls");
                             if (getenv("PA30_DEBUG")) fprintf(stderr, "SEED reljmps\n");
+                            if (rd16(prepared + lfa + 24) == 0x10B)
                             pa30_transform_reljmps(prepared, sourceLen, rt,
                                                    rn, hintBuf, sizeOfImage);
                             PHASE("nat-reljmps");
