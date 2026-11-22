@@ -2611,6 +2611,7 @@ static void pa30_transform_pointers(unsigned char *buf, unsigned long len,
     unsigned char *hint;
     unsigned long pos;
     unsigned long end = len >= 4 ? len - 4 : 0;
+    int skipImm = getenv("PA30_SKIPIMM") != NULL;
 
     if (!sizeOfHeaders || sizeOfHeaders >= end || !sizeOfImage)
         return;
@@ -2624,7 +2625,7 @@ static void pa30_transform_pointers(unsigned char *buf, unsigned long len,
         /* The DLL's hint map marks instruction operands as already handled;
          * skip dwords immediately following common immediate-carrying x86
          * opcodes so their operands are not mistaken for pointers. */
-        if (pos && getenv("PA30_SKIPIMM") &&
+        if (pos && skipImm &&
             ((buf[pos - 1] >= 0xB8 && buf[pos - 1] <= 0xBF) ||
              buf[pos - 1] == 0x68 || buf[pos - 1] == 0xE8 ||
              buf[pos - 1] == 0xE9 || buf[pos - 1] == 0x05 ||
@@ -3618,6 +3619,7 @@ static int compo_decompress(BITR *br, const COMPFMT *fmt,
     int currentSeg = -1;
     int rc;
     unsigned long symLo = 0, symHi = 100000;
+    const char *symDbg = getenv("PA30_SYMDBG");
     {
         const char *s = getenv("PA30_SYMLO");
         const char *e = getenv("PA30_SYMHI");
@@ -3658,7 +3660,7 @@ static int compo_decompress(BITR *br, const COMPFMT *fmt,
         }
 
 
-        if (getenv("PA30_SYMDBG") && pos >= symLo && pos < symHi)
+        if (symDbg && pos >= symLo && pos < symHi)
             fprintf(stderr, "SYM pos=%lu val=%lu len=%lu bitpos=%lu\n",
                     pos, sym.value, sym.length, br->bitpos);
         if (sym.length == 1)
@@ -3720,7 +3722,7 @@ static int compo_decompress(BITR *br, const COMPFMT *fmt,
                         chunk = (unsigned long)limit;
                     sp = cpos2 + curOff;
 
-                    if (getenv("PA30_SYMDBG") && pos >= symLo && pos < symHi)
+                    if (symDbg && pos >= symLo && pos < symHi)
                         fprintf(stderr,
                             "RIFT pos=%lu len=%lu done=%lu cpos=%ld ri=%u/%u off=%ld sp=%ld limit=%ld chunk=%lu bitpos=%lu\n",
                             pos, len, done, cpos2, curi, riftN, curOff, sp,
@@ -3752,7 +3754,7 @@ static int compo_decompress(BITR *br, const COMPFMT *fmt,
                 /* k<3 raw distances are measured from the rift-mapped
                  * position in the combined window. */
                 dist = (long)(sym.value - 172032UL) - riftOff;
-                if (getenv("PA30_SYMDBG") && pos < 512)
+                if (symDbg && pos < 512)
                     fprintf(stderr,
                         "  DIST pos=%lu raw=%ld riftOff=%ld dist=%ld len=%lu\n",
                         pos, (long)(sym.value - 172032UL), riftOff, dist, len);
@@ -3771,7 +3773,7 @@ static int compo_decompress(BITR *br, const COMPFMT *fmt,
                 /* The match window is the source file followed by the
                  * bytes decoded so far, so a distance larger than `pos`
                  * reaches back into the source. */
-                if (getenv("PA30_SYMDBG") && (pos == 83697 || pos == 86119))
+                if (symDbg && (pos == 83697 || pos == 86119))
                 {
                     long ap = (long)pos - dist;
                     fprintf(stderr,
