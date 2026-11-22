@@ -2274,11 +2274,16 @@ static void cli_sig_ret_and_params(const CLIMAP *cm, unsigned char *p,
                                    unsigned params, unsigned depth)
 {
     if (depth > 8) return;
-    /* The DLL's signature walker only remaps tokens of the first type it
-     * parses (the return type); later parameter types are just skipped. */
-    cli_sig_type(cm, p, n, pos, depth + 1, 1);
-    while (params-- && *pos < n)
-        cli_sig_type(cm, p, n, pos, depth + 1, 0);
+    /* The DLL's hand-written signature walker takes a different branch
+     * when the return type is ELEMENT_TYPE_END / VOID / TYPEDBYREF: it
+     * skips the type list entirely and leaves every token untouched. */
+    {
+        unsigned ret = (*pos < n) ? p[*pos] : 0;
+        int noMap = (ret == 0x00 || ret == 0x01 || ret == 0x16);
+        cli_sig_type(cm, p, n, pos, depth + 1, !noMap);
+        while (params-- && *pos < n)
+            cli_sig_type(cm, p, n, pos, depth + 1, !noMap);
+    }
 }
 
 static void cli_sig_method(const CLIMAP *cm, unsigned char *p,
@@ -2378,8 +2383,6 @@ static void pa30_transform_cli_blobs(unsigned char *buf, unsigned long len,
         unsigned long pos, blen, start, end;
         unsigned char *p;
 
-        if (getenv("PA30_BLOBDBG")) fprintf(stderr,
-            "BLOB off=%u kind=%u\n", off, kind);
         if (off >= heapLen) continue;
         pos = base + off;
         blen = sig_comp(buf, base + heapLen, &pos);
@@ -2400,6 +2403,8 @@ static void pa30_transform_cli_blobs(unsigned char *buf, unsigned long len,
             if (end <= start || end > heapEnd) continue;
             p = buf;
         }
+        if ((kind == 0 || kind == 2) && start < end && p[start] == 0x06)
+            kind = 3;                  /* FieldSig referenced via kind 0/2 */
         if (kind >= 1 && kind <= 5)
         {
             unsigned long q = start;
@@ -2527,10 +2532,6 @@ static int cli_compression_rift(RIFTENTRY **out, unsigned *outn,
     memset(&o, 0, sizeof(o));
     if (src->empty || tgt->empty)
         return 0;
-    if (getenv("PA30_PHASE")) fprintf(stderr,
-        "CLIMAP heaps=%u,%u,%u,%u srcRows6=%u tgtRows6=%u\n",
-        cm->heapN[0], cm->heapN[1], cm->heapN[2], cm->heapN[3],
-        src->rows[6], tgt->rows[6]); fflush(stderr);
     cli_add_heap(&o, (__int64)src->stringsOff, (__int64)tgt->stringsOff,
                  cm->heap[0], cm->heapN[0]);
     cli_add_heap(&o, (__int64)src->usOff, (__int64)tgt->usOff,
@@ -2545,9 +2546,6 @@ static int cli_compression_rift(RIFTENTRY **out, unsigned *outn,
         if (!src->rows[t] || !tgt->rows[t] ||
             src->rows[t] > 0x100000UL || tgt->rows[t] > 0x100000UL)
             continue;
-        if (getenv("PA30_PHASE")) fprintf(stderr,
-            "CLITBL t=%u srows=%u trows=%u mapn=%u\n",
-            t, src->rows[t], tgt->rows[t], cm->tblN[t]); fflush(stderr);
         same = (src->stride[t] == tgt->stride[t]);
         for (c = 0; same && c < g_cliNCols[t]; ++c)
             if (src->is4[t][c] != tgt->is4[t][c]) same = 0;
@@ -4658,8 +4656,6 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
                     (size_t)(total ? total : 1) * sizeof(*comb));
                 RIFTENTRY *sortTmp = (RIFTENTRY *)malloc(
                     (size_t)(total ? total : 1) * sizeof(*sortTmp));
-                if (getenv("PA30_PHASE")) fprintf(stderr,
-                    "CLIRIFT crn=%u oriftN=%u total=%u\n", crn, oriftN, total); fflush(stderr);
                 if (comb && sortTmp)
                 {
                     unsigned j, w, k;
@@ -4828,7 +4824,6 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
                                 PHASE("cli-relocs");
                                 pa30_transform_resources(prepared, sourceLen, rt, rn);
                                 PHASE("cli-resources");
-                                pa30_mark_import_section(prepared, sourceLen);
                                 if (getenv("PA30_BLIND"))
                                     pa30_transform_rvas(prepared, sourceLen, rt, rn,
                                         sizeOfImage, sizeOfHeaders);
