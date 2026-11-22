@@ -2759,7 +2759,9 @@ static int pa30_x64_decode(const unsigned char *start,
     }
     /* The DLL's table only knows 48-4F as a REX prefix; 40-47 are plain
      * one-byte opcodes to it. */
-    if (p < end && *p >= 0x48 && *p <= 0x4F)
+    /* In 64-bit mode 0x40-0x4F are always REX prefixes (the INC/DEC opcodes
+     * were repurposed); a legacy prefix such as 0x66 may precede them. */
+    if (p < end && *p >= 0x40 && *p <= 0x4F)
     {
         rexw = (*p & 0x08) != 0;
         ++p;
