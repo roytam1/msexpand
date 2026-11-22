@@ -1448,7 +1448,7 @@ Phase D is the genuine open-ended piece.
         ModRM bytes rewrite neighbouring data.
 
     Verification: the full KB2959977 MSU now extracts **513/513** byte-exact
-    targets with `PA30_NO_OS=1` ¡X identical to OS delegation.  blob 0/1,
+    targets with `PA30_NO_OS=1` ï¿½X identical to OS delegation.  blob 0/1,
     d0/d1, PA19, XPRESS, LZX and LZMS remain byte-exact.
 
     **KB5131083 hint-map follow-up (part 51).**  The DLL's hint map marks the
@@ -1569,3 +1569,28 @@ Phase D is the genuine open-ended piece.
     improves from 417 to 174 differing output bytes; the remaining bytes are
     a few signature forms whose parse still diverges from the DLL's
     hand-written signature walker.  Regressions remain byte-exact.
+
+    **Windows 11 NDP481 offset-rift parity (part 56).**  Expanded
+    `windows11.0-kb5127690-x64-ndp481_...msu` with `PA30_NO_OS=1` and
+    compared all 2732 CIX targets against their manifest SHA256:
+
+      - baseline: 2523 OK, 201 bad, 8 missing (patch failures).
+      - after skipping the CLI compression rift when `BitReadCliMap`'s
+        presence bit is clear: 2644 OK, 83 bad, 5 missing.  The DLL's
+        `CompressionRiftTableFromCliMapComponent::InternalProcess` builds an
+        empty table in that case; we were adding an identity entry for every
+        metadata table, inflating the 4-entry offset rift to ~72k entries
+        and corrupting `0x54000` matches.
+      - after keeping repeated-rift entries in the offset rift until the
+        final Sum/reduce: 2647 OK, 84 bad, 1 missing.  The DLL reduces only
+        the final table; our early dedup dropped a boundary entry that the
+        merged CLI entries separated again, which caused `distfail` on
+        `msil_smsvchost.exe` and cascaded through four dependent targets.
+
+    Verified the DLL's tables with gdb: for a delta with an empty CLI map its
+    `OffsetRiftTable::Init` receives 4 entries (our unmerged table), and for
+    `msil_smsvchost` its 1712-entry table differs from ours by exactly the
+    one boundary entry the early dedup removed.  Regressions stay
+    byte-exact: KB2959977 513/513, KB5131083 209/209.  The remaining 85
+    targets are native CLR/PDB-style images whose seed still differs in a
+    handful of .text/.pdata pointer cells, plus a few CLI IL token forms.

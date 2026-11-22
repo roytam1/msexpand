@@ -2532,6 +2532,19 @@ static int cli_compression_rift(RIFTENTRY **out, unsigned *outn,
     memset(&o, 0, sizeof(o));
     if (src->empty || tgt->empty)
         return 0;
+    /* The DLL skips CompressionRiftTableFromCliMap entirely when the CliMap
+     * is empty (BitReadCliMap's presence bit was clear).  Adding identity
+     * entries for every metadata table in that case blows the offset rift up
+     * from a handful of entries to tens of thousands and corrupts RIFT
+     * matches. */
+    {
+        unsigned q, any = 0;
+        for (q = 0; q < 4; ++q)
+            if (cm->heapN[q]) any = 1;
+        for (q = 0; q < 64; ++q)
+            if (cm->tblN[q]) any = 1;
+        if (!any) return 0;
+    }
     cli_add_heap(&o, (__int64)src->stringsOff, (__int64)tgt->stringsOff,
                  cm->heap[0], cm->heapN[0]);
     cli_add_heap(&o, (__int64)src->usOff, (__int64)tgt->usOff,
@@ -4601,14 +4614,13 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
                         fprintf(stderr, " (%I64d->%I64d)", t3[q].left, t3[q].right);
                     fprintf(stderr, "\n");
                 }
-                /* The OffsetRiftTable input keeps only left > 0 and drops
-                 * an entry whose rift repeats the previous entry's. */
+                /* The DLL only reduces the *final* Sum table; dropping
+                 * repeated rifts here is wrong because the CLI entries
+                 * merged below can separate two same-rift entries. */
                 w = 0;
                 for (k = 0; k < n3; ++k)
                 {
                     if (t3[k].left <= 0) continue;
-                        if (w && (t3[w - 1].right - t3[w - 1].left) ==
-                             (t3[k].right - t3[k].left)) continue;
                     t3[w++] = t3[k];
                 }
                 n3 = w;
