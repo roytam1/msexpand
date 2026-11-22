@@ -358,6 +358,7 @@ static int rift_read(BITR *br, RIFTENTRY **out, unsigned *outn)
 /* ---------- generic canonical Huffman (bit-reversed, LSB-first) ----------- */
 #define HUFF_MAX_SYMS 872
 #define HUFF_MAX_BITS 16
+#define HUFF_TABLE_BITS 12
 
 typedef struct tagHUFF
 {
@@ -366,6 +367,11 @@ typedef struct tagHUFF
     unsigned char len[HUFF_MAX_SYMS];
     unsigned int code[HUFF_MAX_SYMS];   /* bit-reversed canonical codes */
     unsigned int msb[HUFF_MAX_SYMS];    /* canonical codes, MSB-first */
+    unsigned short count[HUFF_MAX_BITS + 2];
+    unsigned short firstCode[HUFF_MAX_BITS + 2];
+    unsigned short sym[HUFF_MAX_SYMS];  /* symbols ordered by code length */
+    unsigned short tblSym[1 << HUFF_TABLE_BITS];
+    unsigned char tblLen[1 << HUFF_TABLE_BITS];
 } HUFF;
 
 static int huff_build(HUFF *h, const unsigned char *lens, unsigned n,
@@ -381,6 +387,7 @@ static int huff_build(HUFF *h, const unsigned char *lens, unsigned n,
     h->n = n;
     h->maxBits = maxBits;
     memset(h->len, 0, sizeof(h->len));
+    memset(h->tblLen, 0, sizeof(h->tblLen));
     memcpy(h->len, lens, (size_t)n);
     for (i = 0; i <= maxBits + 1; ++i)
         cnt[i] = 0;
@@ -401,14 +408,30 @@ static int huff_build(HUFF *h, const unsigned char *lens, unsigned n,
         first[len] = nextCode;
         nextCode = (nextCode + cnt[len]) >> 1;
     }
+    for (len = 0; len <= HUFF_MAX_BITS + 1; ++len)
+    {
+        h->count[len] = 0;
+        h->firstCode[len] = 0;
+    }
+    for (len = 1; len <= maxBits; ++len)
+    {
+        h->count[len] = (unsigned short)cnt[len];
+        h->firstCode[len] = (unsigned short)first[len];
+    }
+    {
+        unsigned idx = 0;
+        for (len = 1; len <= maxBits; ++len)
+            for (i = 0; i < n; ++i)
+                if (h->len[i] == len) h->sym[idx++] = (unsigned short)i;
+    }
     for (i = 0; i < n; ++i)
     {
         unsigned l = h->len[i];
+        unsigned r = 0;
         h->code[i] = 0;
         if (l)
         {
             unsigned c = first[l]++;
-            unsigned r = 0;
             unsigned k;
             h->msb[i] = c;
             for (k = 0; k < l; ++k)
@@ -419,21 +442,44 @@ static int huff_build(HUFF *h, const unsigned char *lens, unsigned n,
             h->code[i] = r;
         }
     }
+    /* fill shortest codes first so they win ambiguous table slots */
+    for (i = 0; i < n; ++i)
+    {
+        unsigned si = h->sym[i];
+        unsigned l = h->len[si];
+        unsigned r = h->code[si];
+        if (l && l <= HUFF_TABLE_BITS)
+        {
+            unsigned idx;
+            for (idx = r; idx < (1u << HUFF_TABLE_BITS); idx += 1u << l)
+                if (!h->tblLen[idx])
+                {
+                    h->tblSym[idx] = (unsigned short)si;
+                    h->tblLen[idx] = (unsigned char)l;
+                }
+        }
+    }
     return 0;
 }
 
 static unsigned huff_decode(const HUFF *h, BITR *br)
 {
-    unsigned code = 0;
-    unsigned len;
-    unsigned i;
-    for (len = 1; len <= h->maxBits; ++len)
+    unsigned pk = br_peek(br, HUFF_TABLE_BITS);
+    if (h->tblLen[pk])
     {
-        code |= br_read(br, 1) << (len - 1);
-        for (i = 0; i < h->n; ++i)
+        br_skip(br, h->tblLen[pk]);
+        return h->tblSym[pk];
+    }
+    /* no table entry: decode from the start with the linear scan */
+    {
+        unsigned code = 0;
+        unsigned len, i;
+        for (len = 1; len <= h->maxBits; ++len)
         {
-            if (h->len[i] == len && h->code[i] == code)
-                return i;
+            code |= br_read(br, 1) << (len - 1);
+            for (i = 0; i < h->n; ++i)
+                if (h->len[i] == len && h->code[i] == code)
+                    return i;
         }
     }
     return 0;
@@ -443,16 +489,13 @@ static unsigned huff_decode(const HUFF *h, BITR *br)
 static unsigned huff_decode_msb(const HUFF *h, BITR *br)
 {
     unsigned code = 0;
-    unsigned len;
-    unsigned i;
+    unsigned len, i;
     for (len = 1; len <= h->maxBits; ++len)
     {
         code = (code << 1) | br_read(br, 1);
         for (i = 0; i < h->n; ++i)
-        {
             if (h->len[i] == len && h->msb[i] == code)
                 return i;
-        }
     }
     return 0;
 }
@@ -4776,24 +4819,31 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
                             else
                             {
                             if (getenv("PA30_DEBUG")) fprintf(stderr, "SEED pointers\n");
+                            PHASE("nat-start");
                             pa30_transform_pointers(prepared, sourceLen, rt, rn,
                                 oldBase, peImageBase,
                                 sizeOfImage, sizeOfHeaders, hintBuf);
+                            PHASE("nat-pointers");
                             if (getenv("PA30_DEBUG")) fprintf(stderr, "SEED amd64 rip\n");
                             pa30_transform_amd64_rip(prepared, sourceLen, rt, rn,
                                                      sizeOfImage, hintBuf);
+                            PHASE("nat-amd64rip");
                             if (getenv("PA30_DEBUG")) fprintf(stderr, "SEED pdata\n");
                             pa30_transform_pdata_amd64(prepared, sourceLen, rt, rn,
                                                        sizeOfImage);
+                            PHASE("nat-pdata");
                             if (getenv("PA30_DEBUG")) fprintf(stderr, "SEED relocs\n");
                             pa30_transform_relocs(prepared, sourceLen, rt, rn,
                                 oldBase, peImageBase,
                                 sizeOfImage);
+                            PHASE("nat-relocs");
                             if (getenv("PA30_DEBUG")) fprintf(stderr, "SEED resources\n");
                             pa30_transform_resources(prepared, sourceLen,
                                                      rt, rn);
+                            PHASE("nat-resources");
                             if (getenv("PA30_DEBUG")) fprintf(stderr, "SEED markimports\n");
                             pa30_mark_import_section(prepared, sourceLen);
+                            PHASE("nat-markimports");
                             if (getenv("PA30_DEBUG")) fprintf(stderr, "SEED imports\n");
                             if (getenv("PA30_BLIND"))
                                 pa30_transform_rvas(prepared, sourceLen, rt, rn,
@@ -4801,12 +4851,15 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
                             else
                                 pa30_rewrite_imports(prepared, sourceLen,
                                                      rt, rn);
+                            PHASE("nat-imports");
                             if (getenv("PA30_DEBUG")) fprintf(stderr, "SEED relcalls\n");
                             pa30_transform_relcalls(prepared, sourceLen, rt,
                                                     rn, hintBuf, sizeOfImage);
+                            PHASE("nat-relcalls");
                             if (getenv("PA30_DEBUG")) fprintf(stderr, "SEED reljmps\n");
                             pa30_transform_reljmps(prepared, sourceLen, rt,
                                                    rn, hintBuf, sizeOfImage);
+                            PHASE("nat-reljmps");
                             if (getenv("PA30_DEBUG")) fprintf(stderr, "SEED exports\n");
                             pa30_transform_exports(prepared, sourceLen,
                                                    rt, rn);
