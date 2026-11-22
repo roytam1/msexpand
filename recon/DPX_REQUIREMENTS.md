@@ -1619,3 +1619,14 @@ Phase D is the genuine open-ended piece.
     (the DLL maps that field only after the handler step).  W11 native
     verification rises to **2668/2732**; KB2959977 513/513 and KB5131083
     209/209 remain byte-exact.
+
+    **Short-jump folding (part 59).**  Traced the seed mismatch in
+    `x86_netfx4-mscordbi.dll` (patch 34, basis `x86_netfx4-clr.dll`) to
+    `RiftTransformRelativeJmpsI386`: the DLL folds an E9/0F8x jump whose
+    mapped rel32 fits in rel8 into a short jump (EB rel8 / 7x rel8) and
+    leaves the remaining bytes of the old 6-byte instruction alone.  Our
+    transform always wrote a 4-byte rel32, so ~4800 bytes of the seed
+    differed; the far-jump target-hint check also had to move inside the
+    far branch (the DLL does not check it for short jumps).  W11 native
+    verification rises to **2675/2732**; KB2959977 513/513 and KB5131083
+    209/209 remain byte-exact.

@@ -3462,14 +3462,36 @@ static void pa30_transform_reljmps(unsigned char *buf, unsigned long len,
             if (targetRVA < 0 || (unsigned long)targetRVA >= sizeOfImage)
                 continue;
             to = pa30_rva_off(buf, len, (unsigned long)targetRVA);
-            if (to == 0xFFFFFFFFUL || to >= len ||
-                (hint && (hint[to] & 0x01))) continue;
+            if (to == 0xFFFFFFFFUL || to >= len) continue;
             mappedSite = (long)pa30_map_rva(rt, rn, (unsigned long)siteRVA);
             mappedTarget = (long)pa30_map_rva(rt, rn,
                                               (unsigned long)targetRVA);
             newrel = mappedTarget - mappedSite;
-            if (newrel != rel)
-                pa30_set_u32(buf, hintAt + 1, (unsigned long)newrel);
+            if (newrel > 127 || newrel < -128)
+            {
+                /* Far jump: the DLL honours the target's hint bit. */
+                if (hint && (hint[to] & 0x01)) continue;
+                if (newrel != rel)
+                    pa30_set_u32(buf, hintAt + 1, (unsigned long)newrel);
+            }
+            else if (newrel != rel)
+            {
+                /* RiftTransformRelativeJmpsI386 folds a jump whose mapped
+                 * displacement fits in rel8 into a short jump (EB rel8 or
+                 * 7x rel8), leaving the rest of the old 6-byte instruction
+                 * untouched. */
+                if (buf[p] == 0xE9)
+                {
+                    buf[p] = 0xEB;
+                    buf[p + 1] = (unsigned char)newrel;
+                }
+                else
+                {
+                    unsigned char op2 = buf[hintAt];
+                    buf[p] = (unsigned char)(0x70 | (op2 & 0x0F));
+                    buf[hintAt] = (unsigned char)newrel;
+                }
+            }
             p += opLen - 1;
         }
     }
