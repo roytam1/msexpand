@@ -2056,7 +2056,9 @@ static void pa30_transform_cli_disasm(unsigned char *buf, unsigned long len,
             meta ? meta->rows[6] : 0);
         return;
     }
-    for (row = 1; row <= meta->rows[6]; ++row)
+    /* The DLL's loop breaks when the next row index reaches rows[6], so the
+     * last MethodDef row is never visited.  Match that off-by-one. */
+    for (row = 1; row < meta->rows[6]; ++row)
     {
         unsigned long rva = (unsigned long)cli_get_cell(meta, buf, len, 6,
                                                         (unsigned)row, 0) +
@@ -2261,8 +2263,10 @@ static unsigned sig_map_token(const CLIMAP *cm, unsigned v)
     unsigned row = v >> 2;
     unsigned tbl = (tag == 2) ? 27 : 2;
 
-    if (row >= g_sigRows[tbl])
-        return v;
+    /* RiftTable::Map does not range-check the row against the table's row
+     * count: values past the last entry use that entry's rift.  Rejecting
+     * out-of-range rows here silently skips tokens the DLL does remap. */
+    (void)g_sigRows;
     return (rift_map_value(cm->tbl[tbl], cm->tblN[tbl], row) << 2) | tag;
 }
 

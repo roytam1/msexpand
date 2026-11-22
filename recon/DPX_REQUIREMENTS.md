@@ -1641,3 +1641,16 @@ Phase D is the genuine open-ended piece.
     an E9 / 0F8x byte that was not a jump in the source image is skipped.
     W11 native verification rises to **2676/2732**; KB2959977 513/513 and
     KB5131083 209/209 remain byte-exact.
+
+    **CLI walk off-by-one and signature row check (part 61).**  Traced the
+    remaining `amd64_edmgen.exe` seed mismatch by watching every allocation
+    of sourceLen from process entry: the DLL never writes the mismatched
+    token at all.  A gdb trace of `CliMetadata::GetCellValue` from
+    `RiftTransformCliDisasm` showed it visits MethodDef rows 1..rows-1 —
+    the loop breaks when the next row index reaches `rows[6]`.  Our walk
+    included the last row and remapped a call token the DLL leaves alone.
+    The other half of the seed diff was signature tokens whose row exceeds
+    the source table's row count: `RiftTable::Map` does not range-check, it
+    uses the last entry's rift, but `sig_map_token` rejected them.  Removed
+    that check.  W11 native verification rises to **2686/2732**;
+    KB2959977 513/513 and KB5131083 209/209 remain byte-exact.
