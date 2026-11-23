@@ -3100,7 +3100,7 @@ static void pa30_transform_pdata_amd64(unsigned char *buf, unsigned long len,
                 {
                     unsigned long codes = buf[uo + 2];
                     unsigned long hop = 4 * ((codes + 1) >> 1) + 4;
-                    if (uo + hop + 4 <= len)
+                    if (uo + hop + 4 <= len && !((uo + hop) & 3))
                     {
                         unsigned long v = rd32(buf + uo + hop);
                         pa30_set_u32(buf, uo + hop,
