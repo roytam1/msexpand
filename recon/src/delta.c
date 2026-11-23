@@ -1156,7 +1156,7 @@ static unsigned rift_multiply(const RIFTENTRY *a, unsigned an,
         d = endB - x;
         if ((unsigned __int64)(endA + INT64_MIN) > (unsigned __int64)d)
         {
-            while (on < 400)
+            while (on < 512)
             {
                 __int64 pos;
                 acc += d + 1;
@@ -1193,7 +1193,7 @@ static unsigned rift_multiply(const RIFTENTRY *a, unsigned an,
         prevLeft = left_i;
         prevPos = right_i;
         prevEnd = endB;
-        while (on < 400 &&
+        while (on < 512 &&
                (unsigned __int64)(end_i - prevLeft) >
                (unsigned __int64)(prevEnd - prevPos))
         {
