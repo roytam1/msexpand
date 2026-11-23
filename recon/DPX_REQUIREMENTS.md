@@ -1769,3 +1769,21 @@ Phase D is the genuine open-ended piece.
     blob 320 (at 0x1484D+, in .rdata) are a separate issue: the DLL leaves
     those bytes untouched while our AMD64 RIP pass rewrites them, so the
     output still has one differing byte there.
+
+    **CLI-branch i386 relative calls (part 69, continued).**  Blobs 314/317
+    are PE32 managed images whose deltas carry CLI metadata, so they take the
+    CLI seed branch.  That branch previously omitted the i386 relcall/reljmp
+    passes, leaving 5 and 16 output bytes wrong.  The DLL runs those passes
+    for such images; adding them for PE32 CLI sources with a `.rdata` section
+    reduces blobs 314 and 317 to 1 and 10 bytes.  The `.rdata` guard is
+    empirical: blobs 213/565 have `.text/.rsrc/.reloc` only, and adding the
+    passes unconditionally overrode E8 rel32 values the DLL leaves alone
+    (e.g. blob 213's call at 0x1BC7: source rel 0x233F, DLL unchanged, we
+    wrote 0x18AD).  With the guard all 842 blobs were rechecked: still 18
+    divergent, no regressions.
+    CMOD_REQD/CMOD_OPT coded-index handling was also investigated: globally
+    skipping the remap fixes blob 317's ten 0x84-vs-0x81 bytes but regresses
+    blobs 758/759 (52 and 6 bytes); value-magnitude and row-count checks did
+    not separate the cases, so that change was reverted.  Remaining diffs:
+    blobs 91/147/320 in CLI signature tokens, blob 314 one byte, blob 249
+    three x86 bytes, blob 317 ten CMOD bytes.

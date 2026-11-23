@@ -5123,6 +5123,24 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
                                     pa30_transform_pdata_amd64(prepared, sourceLen,
                                         rt, rn, sizeOfImage);
                                 }
+                                if (rd16(prepared + lfa + 24) == 0x10B)
+                                {
+                                    int hasRdata = 0;
+                                    unsigned short nSect = rd16(prepared + lfa + 6);
+                                    unsigned long sh = lfa + 24 +
+                                        rd16(prepared + lfa + 20), si;
+                                    for (si = 0; si < nSect && sh + 40 * (si + 1) <= sourceLen; ++si)
+                                        if (!memcmp(prepared + sh + 40 * si, ".rdata\0\0", 8))
+                                        { hasRdata = 1; break; }
+                                    if (hasRdata)
+                                    {
+                                        pa30_transform_relcalls(prepared, sourceLen, rt,
+                                                               rn, hintBuf, sizeOfImage);
+                                        pa30_transform_reljmps(prepared, sourceLen, rt,
+                                                               rn, hintBuf, sizeOfImage,
+                                                               source);
+                                    }
+                                }
                                 PHASE("cli-amd64");
                             }
                             else if (h.flags & 0x07F87FFEUL)
