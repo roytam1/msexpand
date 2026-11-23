@@ -1753,3 +1753,19 @@ Phase D is the genuine open-ended piece.
     (blobs 91, 147, 249, 314, 317, 320) that differ in 1-16 x86 relcall /
     metadata bytes and twelve blobs whose manifest basis is not a delta output
     and needs re-checking.  Full ARM64 parity is not yet reached.
+
+    **MapRva boundary semantics (part 69, continued).**  Disassembly of
+    msdelta.dll (RiftTable lookup at RVA 0x35D66) and a runtime probe of its
+    post-search state confirm the boundary is exactly `entry.left <= rva`:
+    for RVA 103679 the DLL selects the entry at left=102480 (rift 36864),
+    and for 103680 the entry at left=103680 (rift 38624).  Our pa30_map_rva
+    already matches.  The remaining displacement error in blob 320 came from
+    the RIP site base: the DLL maps the target derived from the *end of the
+    whole instruction* (including any immediate after the disp32), while we
+    used disp32+4.  For `83 3D <disp32> <imm8>` that is one byte, which crosses
+    a rift boundary and amplified into a 0x6E0 displacement difference.
+    Using `p + step` for siteRVA removes ten wrong seed bytes in blob 320 with
+    no regressions (18/842 root blobs unchanged).  Ten further seed bytes in
+    blob 320 (at 0x1484D+, in .rdata) are a separate issue: the DLL leaves
+    those bytes untouched while our AMD64 RIP pass rewrites them, so the
+    output still has one differing byte there.

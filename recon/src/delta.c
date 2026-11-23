@@ -3145,7 +3145,9 @@ static void pa30_transform_amd64_rip(unsigned char *buf, unsigned long len,
                 long rel, siteRVA, targetRVA, mappedSite, mappedTarget, newrel;
                 unsigned long to;
                 rel = (long)rd32(buf + f);
-                siteRVA = (long)(begin + (f - start) + 4);
+                /* RIP is the address of the next instruction: the end of the
+                 * whole instruction, including any immediate after disp32. */
+                siteRVA = (long)(begin + (p - start) + (unsigned long)step);
                 targetRVA = siteRVA + rel;
                 /* The DLL does not range-check the target: MapRva is applied
                  * to whatever value the operand holds. */
