@@ -2442,7 +2442,13 @@ static void pa30_transform_cli_blobs(unsigned char *buf, unsigned long len,
         {
             unsigned long q = start;
             if (kind == 5)
+            {
+                /* A TypeSpec signature that starts with a custom modifier
+                 * is left untouched by the DLL. */
+                if (q < end && (p[q] == 0x1F || p[q] == 0x20))
+                    continue;
                 cli_sig_type(cm, p, end, &q, 0, 1);
+            }
             else if (kind == 3)
             {
                 if (q < end) ++q;        /* ELEMENT_TYPE_FIELD (0x06) */
