@@ -1711,7 +1711,13 @@ Phase D is the genuine open-ended piece.
     the AMD64 disassembler and made it rewrite a relative call that the DLL
     treats as operand data; a TypeSpec signature that starts with a custom
     modifier is also left untouched.  W11 native verification reaches
-    **2731/2732**.  The last file (x86 system.printing) differs by two
-    signature-token bytes in a MethodDef signature whose later parameters
-    the DLL walks without remapping; the remaining gap is that walker quirk.
-    KB2959977 513/513 and KB5131083 209/209 remain byte-exact.
+    **2731/2732**.  KB2959977 513/513 and KB5131083 209/209 remain byte-exact.
+
+    **Complete native parity (part 68).**  The DLL's method-signature walker
+    enters a generic-instance state at `ELEMENT_TYPE_GENERICINST` and walks,
+    without remapping, the token cells of all later parameter types.  Our
+    recursive walker remapped them, leaving two bytes mismatched in the x86
+    system.printing target.  Tracking that state and suppressing later token
+    writes closes the last gap: W11 NDP481 native verification is now
+    **2732/2732** byte-exact, with KB2959977 513/513 and KB5131083 209/209
+    also byte-exact.
