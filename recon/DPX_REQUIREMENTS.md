@@ -1830,3 +1830,12 @@ Phase D is the genuine open-ended piece.
     some out-of-range operands, so that blob newly differs by two bytes;
     the net is 17 -> 16 divergent root blobs with no change to 758/759.
     The remaining root blobs are 148, 249, 314, 320 (plus 12 script cases).
+
+    **AMD64 RIP and opcode 0x82 (part 69, continued).**  The earlier
+    out-of-image range skip was too broad: blob 148's DLL does rewrite
+    out-of-range RIP operands of ordinary opcodes (13 /r, 01 /r).  The real
+    discriminator is the opcode: the DLL's disassembler does not recognise
+    82 /r (group-2 with imm8) as RIP-relative, which is the form used by the
+    disputed operands in blobs 91/147 (82 2D <disp32> <imm8>).  Skipping
+    opcode 0x82 instead of range-checking fixes blobs 91 and 147 while blob
+    148 stays byte-exact: 16 -> 15 divergent root blobs.

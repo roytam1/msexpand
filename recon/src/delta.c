@@ -3157,7 +3157,7 @@ static void pa30_transform_amd64_rip(unsigned char *buf, unsigned long len,
                  * whole instruction, including any immediate after disp32. */
                 siteRVA = (long)(begin + (p - start) + (unsigned long)step);
                 targetRVA = siteRVA + rel;
-                if (targetRVA < 0 || (unsigned long)targetRVA >= sizeOfImage)
+                if (buf[p] == 0x82)
                 { p += (unsigned long)step; continue; }
                 if (!(hint && (hint[f] | hint[f + 1] |
                                hint[f + 2] | hint[f + 3]) & 0x01))
