@@ -854,7 +854,7 @@ static int rift_cmp(const void *a, const void *b)
  * interval, keeping a pending-entry work list in `temp`. */
 static unsigned rift_reverse(const RIFTENTRY *a, unsigned an, RIFTENTRY *out)
 {
-    unsigned temp[4096];            /* 4 dwords per pending entry */
+    unsigned temp[16384];           /* 4 dwords per pending entry */
     unsigned on = 0;
     unsigned v13, v14, v16, v18, v22, v24, v27, v28, v32, v34, v38, v41, v43, v47, v48, v51, v63, v65;
     __int64 v19;
