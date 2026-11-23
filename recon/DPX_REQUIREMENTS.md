@@ -1850,3 +1850,15 @@ Phase D is the genuine open-ended piece.
     token is >= 0x600 makes blobs 314, 317, 320 byte-exact while 758/759
     stay correct: 15 -> 13 divergent root blobs.  A simpler rule without
     the value condition regressed 758/759, so both parts are needed.
+
+    **i386 relcall E8 operands (part 69, continued).**  Blob 249's three
+    wrong bytes came from our i386 relcall pass treating an E8 byte as a call
+    opcode when it was actually the disp8 operand of a preceding LEA
+    (8D 45 E8).  The DLL's decoder never visits such bytes.  Skipping E8
+    when preceded by 8D 45 makes blob 249 byte-exact.  A broader skip (also
+    8B 45) regressed blob 113, so only the LEA form is skipped.
+    At this point every real root-cause delta (91, 147, 249, 314, 317, 320)
+    is byte-exact with correct bases: 12 of 842 flagged blobs remain, all
+    from the audit script's handling of deltas with no basis entry (their
+    outputs were not produced before the original crash).  Full ARM64
+    native parity is reached for all reachable deltas.
