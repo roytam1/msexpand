@@ -1704,3 +1704,14 @@ Phase D is the genuine open-ended piece.
     (the `A1` moffs and `0F 3A` immediate lengths), so it rewrites or skips
     the adjacent relative branch differently.  KB2959977 513/513 and
     KB5131083 209/209 remain byte-exact.
+
+    **x64 moffs width (part 67).**  In 64-bit mode `MOV AL/AX/EAX/RAX,
+    moffs` always carries an 8-byte offset (4 with an address-size prefix),
+    independent of REX.W.  Decoding the non-REX.W form as 4 bytes desynced
+    the AMD64 disassembler and made it rewrite a relative call that the DLL
+    treats as operand data; a TypeSpec signature that starts with a custom
+    modifier is also left untouched.  W11 native verification reaches
+    **2731/2732**.  The last file (x86 system.printing) differs by two
+    signature-token bytes in a MethodDef signature whose later parameters
+    the DLL walks without remapping; the remaining gap is that walker quirk.
+    KB2959977 513/513 and KB5131083 209/209 remain byte-exact.
