@@ -1629,6 +1629,24 @@ static void cli_meta_from_pe(CLIMETA *m, const unsigned char *pe,
     metaSize = rd32(pe + off + 12);
     if ((long)metaOff < 0 || !metaSize) return;
     cli_meta_init(m, pe, len, metaOff, metaSize);
+    if (!m->empty)
+    {
+        unsigned long need, t;
+        cli_meta_derive(m);
+        /* CliMetadata::Init rejects a stream whose declared #~ size is
+         * smaller than the table area implied by its row counts (error
+         * 0x4120A); the DLL then leaves the source's CLI metadata empty and
+         * runs no CLI metadata transform.  Match that here so large managed
+         * sources are not rewritten when the patch expects them untouched. */
+        need = 24 + 4 * cli_popcount64(m->mask);
+        for (t = 0; t < 64; ++t)
+            need += m->stride[t] * m->rows[t];
+        if (need > m->tablesLen)
+        {
+            memset(m, 0, sizeof(*m));
+            m->empty = 1;
+        }
+    }
 }
 
 /* Read the target CliMetadata stored in the pre buffer. */
@@ -1854,10 +1872,14 @@ static void cli_add_table_full(RIFTBUF *o, const CLIMETA *src,
                     __int64 base;
                     if ((__int64)i > end) rv = rift_get_rift(rift, n, (__int64)i, &end);
                     base = tCol + (rv + (__int64)i - 1) * strideT;
-                    if (last)
-                        riftbuf_add(o, base + 2, 5);
-                    riftbuf_add(o, base + 4,
-                                   sCol + ((__int64)i - 1) * strideS + 2);
+                    /* The DLL adds the +2 -> 5 sentinel entry for every
+                     * grown 2->4 column; the +4 -> source mapping only
+                     * exists when another column follows (msdelta.dll.c
+                     * AddTableMap, 42957-42980 vs 42931-42955). */
+                    riftbuf_add(o, base + 2, 5);
+                    if (!last)
+                        riftbuf_add(o, base + 4,
+                                       sCol + ((__int64)i - 1) * strideS + 2);
                 }
             }
         }
@@ -4941,9 +4963,12 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
                                                        sizeOfImage);
                             /* Even when the delta's target has no CLI
                              * metadata, a managed source image still needs
-                             * its MethodDef RVA cells remapped; run the CLI
-                             * metadata pass with the empty target/map. */
-                            if (!(h.flags & 0x1))
+                             * its metadata RVA cells remapped; the DLL runs
+                             * this pass for E8-translated deltas too.  A
+                             * source whose #~ stream fails validation is
+                             * treated as CLI-less by cli_meta_from_pe and
+                             * skips the pass. */
+                            if (!getenv("PA30_SKIPSRCCLI"))
                             {
                                 CLIMETA nc;
                                 CLIBLOBSET nb;
