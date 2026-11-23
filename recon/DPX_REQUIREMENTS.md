@@ -1807,3 +1807,15 @@ Phase D is the genuine open-ended piece.
     matching the DLL's complete signature-walker state machine rather than
     a single write policy.  Tree remains at 18/842 divergent with no
     regressions.
+
+    **CMOD high-token write (part 69, continued).**  Isolating the seed bytes
+    that actually drive blob 317's ten output diffs showed that only two
+    CMOD_OPT tokens matter (seed 0x192BA and 0x1A5BC): both hold value 425
+    (compressed 81 A9) and the DLL leaves them, while our map rewrites them
+    to ~0x4F9.  The DLL's CliMap is byte-identical to ours, so this is a
+    write policy: it does not store a remapped CMOD coded index when the
+    result needs a 2-byte compressed encoding with high part >= 4.  Gating
+    CMOD writes on `nv < 0x400` makes blob 317 byte-exact with no regressions
+    (18 -> 17 divergent blobs).  Applying the same gate to all signature
+    tokens regresses seven blobs, so it stays CMOD-specific.  Remaining
+    root blobs: 91, 147, 249, 314, 320 (each 1-3 bytes).

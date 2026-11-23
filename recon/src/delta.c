@@ -2425,7 +2425,15 @@ static void cli_sig_type(const CLIMAP *cm, unsigned char *p, unsigned long n,
         v = sig_comp(p, n, pos);
         tokEnd = *pos;
         if (doMap)
-            sig_put_comp(p, n, tokStart, tokEnd, sig_map_token(cm, v));
+        {
+            unsigned nv = sig_map_token(cm, v);
+            /* The DLL leaves a CMOD coded index at its source value when
+             * the remapped token needs a 2-byte compressed encoding with
+             * a large high part (the in-place store keeps the original
+             * field shape). */
+            if (!((et == 0x1F || et == 0x20) && nv >= 0x400))
+                sig_put_comp(p, n, tokStart, tokEnd, nv);
+        }
         if (et == 0x1F || et == 0x20)
             cli_sig_type(cm, p, n, pos, depth + 1, doMap);
         break;
