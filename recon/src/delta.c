@@ -3496,6 +3496,10 @@ static void pa30_transform_reljmps(unsigned char *buf, unsigned long len,
                          hint[hintAt + 4]) & 0x01)
                 continue;
             rel = (long)rd32(buf + hintAt + 1);
+            /* RiftTransformRelativeJmpsI386 only visits far jumps; a rel32
+             * already inside [-128,127] is left untouched. */
+            if (rel >= -128 && rel <= 127)
+                continue;
             siteRVA = (long)(va + (p - raw) + opLen);
             targetRVA = siteRVA + rel;
             if (targetRVA < 0 || (unsigned long)targetRVA >= sizeOfImage)
