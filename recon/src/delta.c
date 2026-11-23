@@ -4939,6 +4939,23 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
                             if (getenv("PA30_DEBUG")) fprintf(stderr, "SEED pdata\n");
                             pa30_transform_pdata_amd64(prepared, sourceLen, rt, rn,
                                                        sizeOfImage);
+                            /* Even when the delta's target has no CLI
+                             * metadata, a managed source image still needs
+                             * its MethodDef RVA cells remapped; run the CLI
+                             * metadata pass with the empty target/map. */
+                            if (h.code == 2 && !(h.flags & 0x1))
+                            {
+                                CLIMETA nc;
+                                CLIBLOBSET nb;
+                                memset(&nc, 0, sizeof(nc));
+                                memset(&nb, 0, sizeof(nb));
+                                cli_meta_from_pe(&nc, source, sourceLen);
+                                cli_meta_derive(&nc);
+                                if (!nc.empty)
+                                    pa30_transform_cli_metadata(prepared,
+                                        sourceLen, &nc, &cliTgt, &cliMap,
+                                        rt, rn, &nb);
+                            }
                             PHASE("nat-pdata");
                             if (getenv("PA30_DEBUG")) fprintf(stderr, "SEED relocs\n");
                             pa30_transform_relocs(prepared, sourceLen, rt, rn,

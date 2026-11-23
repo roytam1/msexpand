@@ -1654,3 +1654,14 @@ Phase D is the genuine open-ended piece.
     uses the last entry's rift, but `sig_map_token` rejected them.  Removed
     that check.  W11 native verification rises to **2686/2732**;
     KB2959977 513/513 and KB5131083 209/209 remain byte-exact.
+
+    **Managed source with CLI-less target (part 62).**  For
+    `microsoft.visualbasic.compatibility.dll` the seed diff was a table of
+    MethodDef RVAs (unaligned dwords at file offset 0x74F82) that the DLL
+    remapped through the compression rift even though `PRE cli=0`.  The
+    source PE is managed; only the target's CLI metadata is absent.  The
+    native seed path now parses the source CLI metadata locally and runs the
+    CLI metadata RVA pass with an empty target/map, gated to i386 deltas
+    (`code == 2`) without the E8-translation flag.  W11 native verification
+    rises to **2690/2732**; KB2959977 513/513 and KB5131083 209/209 remain
+    byte-exact.
