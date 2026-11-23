@@ -1738,9 +1738,18 @@ Phase D is the genuine open-ended piece.
     zeroed the source ImageBase field -- e.g. blob 1 (system.ni.dll) had
     exactly 4 bytes clobbered at 0xB2.  With these fixes blob 1, blob 9 and
     blob 242 (the original crash) are byte-exact, and the crash is gone.
-    Remaining root causes: blob 6 (system.core.ni.dll) differs in five CLI
-    metadata row-index cells in the seed (DLL writes 0x1f/0x1f/0x16/0x1f/
-    0x46 where we keep the source values 0x0a/0x0a/0x11/0x1a/0x2f); six
-    small deltas (blobs 91, 147, 249, 314, 317, 320) differ in 1-16 x86
-    relcall / metadata bytes; eleven further blobs need re-checking.  No ARM64
-    regressions have been introduced, but full ARM64 parity is not yet reached.
+    **NGEN CLI metadata root (part 69, continued).**  For NGEN images the PE
+    CLI data directory names a *later* metadata root (the native image) while
+    the DLL rewrites an earlier IL root.  `cli_meta_from_pe` therefore produced
+    an empty `cliSrc`, which both skipped the CLI metadata transform and made
+    `cli_compression_rift` omit the fine-grained CLI entries from the offset
+    rift.  Blob 6 (system.core.ni.dll) differed in 2476 output bytes: the DLL
+    rift had 12 entries where ours had only 7.  A guarded BSJB scan recovers
+    the earlier metadata root only when the image has more than one root and
+    the directory names a different one, so single-root images that
+    CliMetadata::Init intentionally rejects stay untouched.  Blob 6 is now
+    byte-exact and the genuine root-cause count with correct bases drops to
+    18/842 with no regressions.  Remaining root causes are six small deltas
+    (blobs 91, 147, 249, 314, 317, 320) that differ in 1-16 x86 relcall /
+    metadata bytes and twelve blobs whose manifest basis is not a delta output
+    and needs re-checking.  Full ARM64 parity is not yet reached.

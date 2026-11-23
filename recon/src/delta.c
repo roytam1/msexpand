@@ -1606,6 +1606,77 @@ static long cli_rva_to_off(const unsigned char *pe, unsigned long len,
 }
 
 /* Locate and parse the CLI metadata of a PE (ExtractCliMetadata path). */
+/* True when the PE's CLI data directory resolves to a BSJB metadata root.
+ * When it does, an empty cliSrc means CliMetadata::Init rejected the stream
+ * table and the DLL runs no CLI transform; scanning for another BSJB would
+ * wrongly synthesize metadata for those images. */
+static unsigned long cli_dir_meta_off(const unsigned char *pe, unsigned long len)
+{
+    unsigned long lfa, opt, dd, rva, off, mo;
+    if (len < 0x40) return 0;
+    lfa = rd32(pe + 0x3C);
+    if (lfa + 24 > len || memcmp(pe + lfa, "PE\0\0", 4)) return 0;
+    opt = lfa + 24;
+    dd = (rd16(pe + opt) == 0x20B) ? opt + 0x70 : opt + 0x60;
+    dd += 14 * 8;
+    if (dd + 8 > len) return 0;
+    rva = rd32(pe + dd);
+    if (!rva) return 0;
+    off = (unsigned long)cli_rva_to_off(pe, len, rva);
+    if ((long)off < 0 || off + 16 > len) return 0;
+    mo = (unsigned long)cli_rva_to_off(pe, len, rd32(pe + off + 8));
+    if ((long)mo < 0 || mo + 4 > len) return 0;
+    return memcmp(pe + mo, "BSJB", 4) == 0 ? mo : 0;
+}
+
+/* Only scan when the image has more than one metadata root and the CLI data
+ * directory points at a later one.  NGEN images keep their IL metadata in an
+ * earlier root than the native image the directory names; the DLL rewrites
+ * that earlier root.  A single root that cli_meta_from_pe rejected is an
+ * intentional DLL reject and must stay empty. */
+static int cli_meta_needs_scan(const unsigned char *pe, unsigned long len)
+{
+    unsigned long p, cnt = 0, first = 0, dir = cli_dir_meta_off(pe, len);
+    for (p = 0; p + 4 <= len; ++p)
+        if (memcmp(pe + p, "BSJB", 4) == 0)
+        {
+            if (!cnt) first = p;
+            if (++cnt > 1) break;
+        }
+    return cnt > 1 && first != dir;
+}
+
+/* NGEN images leave the CLI data directory pointing at native code, so
+ * cli_meta_from_pe cannot find their metadata.  Scan for the BSJB root
+ * directly and accept the first one whose stream table parses cleanly. */
+static void cli_meta_from_scan(CLIMETA *m, const unsigned char *buf,
+                               unsigned long len)
+{
+    unsigned long p;
+    memset(m, 0, sizeof(*m));
+    m->empty = 1;
+    for (p = 0; p + 0x18 <= len; ++p)
+    {
+        unsigned long need, t;
+        if (memcmp(buf + p, "BSJB", 4)) continue;
+        cli_meta_init(m, buf, len, p, len - p);
+        if (m->empty) continue;
+        cli_meta_derive(m);
+        need = 24 + 4 * cli_popcount64(m->mask);
+        for (t = 0; t < 64; ++t)
+            need += m->stride[t] * m->rows[t];
+        if (need > m->tablesLen || !m->tablesOff)
+        {
+            memset(m, 0, sizeof(*m));
+            m->empty = 1;
+            continue;
+        }
+        return;
+    }
+    memset(m, 0, sizeof(*m));
+    m->empty = 1;
+}
+
 static void cli_meta_from_pe(CLIMETA *m, const unsigned char *pe,
                              unsigned long len)
 {
@@ -4786,6 +4857,8 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
         if (!cliTgt.empty)
         {
             cli_meta_from_pe(&cliSrc, source, sourceLen);
+            if (cliSrc.empty && cli_meta_needs_scan(source, sourceLen))
+                cli_meta_from_scan(&cliSrc, source, sourceLen);
             cli_meta_derive(&cliSrc);
             cli_meta_derive(&cliTgt);
         }
@@ -5086,6 +5159,8 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
                                 memset(&nb, 0, sizeof(nb));
                                 cli_meta_from_pe(&nc, source, sourceLen);
                                 cli_meta_derive(&nc);
+                                if (nc.empty && cli_meta_needs_scan(source, sourceLen))
+                                    cli_meta_from_scan(&nc, source, sourceLen);
                                 if (!nc.empty)
                                     pa30_transform_cli_metadata(prepared,
                                         sourceLen, &nc, &cliTgt, &cliMap,
