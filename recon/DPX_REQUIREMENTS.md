@@ -1862,3 +1862,11 @@ Phase D is the genuine open-ended piece.
     from the audit script's handling of deltas with no basis entry (their
     outputs were not produced before the original crash).  Full ARM64
     native parity is reached for all reachable deltas.
+
+    **Final ARM64 audit (part 69).**  The 12 remaining flagged blobs were
+    verified to be manifest Source entries with type=RAW (config files and
+    raw payloads), not PA30 deltas, so the audit script's numeric-name filter
+    misclassified them.  Every PA30 delta is now byte-exact with a correct
+    basis and the OS-delegated output; the ARM64 native PA30 decoder has no
+    known mismatches.  Combined with the x64 NDP481 2732/2732 result, the
+    native expander matches OS delegation on every tested MSU.
