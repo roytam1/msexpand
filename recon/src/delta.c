@@ -2275,6 +2275,7 @@ static void sig_put_comp(unsigned char *p, unsigned long n,
 }
 
 static unsigned g_sigRows[64];          /* source metadata row counts */
+static int g_cliFieldSig;               /* walking a FieldSig blob */
 
 /* The DLL remaps tag 0 and 1 through the TypeDef map and tag 2 through the
  * TypeSpec map (msdelta.dll.c:39479-39500, 39560-39574).  Out-of-range rows
@@ -2353,7 +2354,10 @@ static void cli_sig_type(const CLIMAP *cm, unsigned char *p, unsigned long n,
     case 0x0F:                  /* PTR */
     case 0x10:                  /* BYREF */
     case 0x1D:                  /* SZARRAY */
-        cli_sig_type(cm, p, n, pos, depth + 1, doMap);
+        /* In a FieldSig the DLL walks through BYREF without remapping the
+         * inner type's token. */
+        cli_sig_type(cm, p, n, pos, depth + 1,
+                     (et == 0x10 && g_cliFieldSig) ? 0 : doMap);
         break;
     case 0x13:                  /* VAR */
     case 0x1E:                  /* MVAR */
@@ -2442,7 +2446,9 @@ static void pa30_transform_cli_blobs(unsigned char *buf, unsigned long len,
             else if (kind == 3)
             {
                 if (q < end) ++q;        /* ELEMENT_TYPE_FIELD (0x06) */
+                g_cliFieldSig = 1;
                 cli_sig_type(cm, p, end, &q, 0, 1);
+                g_cliFieldSig = 0;
             }
             else if (kind == 4)
             {
@@ -2461,8 +2467,12 @@ static void pa30_transform_cli_blobs(unsigned char *buf, unsigned long len,
             if ((cc & 0x0F) == 0x07)     /* LOCAL_SIG: count + types */
             {
                 unsigned cnt = sig_comp(p, end, &q), i;
+                /* The DLL does not remap the first local's token when the
+                 * type begins with a custom modifier. */
+                int firstCmod = (q < end &&
+                                 (p[q] == 0x1F || p[q] == 0x20));
                 for (i = 0; i < cnt && q < end; ++i)
-                    cli_sig_type(cm, p, end, &q, 0, i == 0);
+                    cli_sig_type(cm, p, end, &q, 0, i == 0 && !firstCmod);
             }
             else
                 cli_sig_method(cm, p, end, &q, 0);
