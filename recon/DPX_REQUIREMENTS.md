@@ -1665,3 +1665,20 @@ Phase D is the genuine open-ended piece.
     without the E8-translation flag (it also applies to ARM64 deltas whose
     target has no CLI metadata).  W11 native verification rises to
     **2691/2732**; KB2959977 513/513 and KB5131083 209/209 remain byte-exact.
+
+    **Stream validation and AMD64 passes (part 63).**  `CliMetadata::Init`
+    rejects a source PE whose `#~` stream is smaller than its table area
+    (error `0x4120A`); such images now get an empty source CLI metadata and
+    skip the metadata pass.  The pass itself also runs for E8-translated
+    deltas, `RiftTransform_AMD64` runs the disassembly/pdata passes after the
+    CLI passes, GENERICINST argument tokens are walked but not remapped,
+    and a `0x06`-prefixed StandAloneSig blob is treated as a FieldSig.
+    W11 native verification rises to **2709/2732**.
+
+    **Rift table capacity (part 64).**  `rift_multiply`'s 400-entry cap and
+    the fixed 512-entry t1/t2/t2r/t3 arrays truncated the offset rift of
+    deltas with large PE/CLI rift tables, corrupting their seeds.  The cap
+    and arrays are raised to 2048 entries, and the final Sum table is reduced
+    even for non-CLI deltas.  A misaligned AMD64 pdata exception-handler
+    rewrite is also skipped.  W11 native verification reaches
+    **2728/2732**; KB2959977 513/513 and KB5131083 209/209 remain byte-exact.
