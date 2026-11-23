@@ -2276,6 +2276,7 @@ static void sig_put_comp(unsigned char *p, unsigned long n,
 
 static unsigned g_sigRows[64];          /* source metadata row counts */
 static int g_cliFieldSig;               /* walking a FieldSig blob */
+static int g_sigGenSeen;                /* a GENERICINST was walked */
 
 /* The DLL remaps tag 0 and 1 through the TypeDef map and tag 2 through the
  * TypeSpec map (msdelta.dll.c:39479-39500, 39560-39574).  Out-of-range rows
@@ -2309,7 +2310,13 @@ static void cli_sig_ret_and_params(const CLIMAP *cm, unsigned char *p,
         int noMap = (ret == 0x00 || ret == 0x01 || ret == 0x16);
         cli_sig_type(cm, p, n, pos, depth + 1, !noMap);
         while (params-- && *pos < n)
-            cli_sig_type(cm, p, n, pos, depth + 1, !noMap);
+        {
+            int dm = !noMap;
+            /* After a GENERICINST the DLL walks (but does not remap) the
+             * remaining parameter types. */
+            if (g_sigGenSeen) dm = 0;
+            cli_sig_type(cm, p, n, pos, depth + 1, dm);
+        }
     }
 }
 
@@ -2377,6 +2384,10 @@ static void cli_sig_type(const CLIMAP *cm, unsigned char *p, unsigned long n,
         break;
     case 0x15:                  /* GENERICINST: CLASS/VALUETYPE + argc + args */
         cli_sig_type(cm, p, n, pos, depth + 1, doMap);
+        /* The DLL's walker enters the generic-instance state after this
+         * element; token cells in all subsequent parameter types are walked
+         * but never remapped. */
+        g_sigGenSeen = 1;
         {
             unsigned argc = sig_comp(p, n, pos), i;
             /* The DLL remaps the GENERICINST class/valuetype token but only
@@ -2438,6 +2449,7 @@ static void pa30_transform_cli_blobs(unsigned char *buf, unsigned long len,
         if ((kind == 0 || kind == 2 || kind == 9) && start < end &&
             p[start] == 0x06)
             kind = 3;                  /* FieldSig in a blob/MemberRef/StandAloneSig slot */
+        g_sigGenSeen = 0;
         if (kind >= 1 && kind <= 5)
         {
             unsigned long q = start;
