@@ -1819,3 +1819,14 @@ Phase D is the genuine open-ended piece.
     (18 -> 17 divergent blobs).  Applying the same gate to all signature
     tokens regresses seven blobs, so it stays CMOD-specific.  Remaining
     root blobs: 91, 147, 249, 314, 320 (each 1-3 bytes).
+
+    **AMD64 RIP out-of-image targets (part 69, continued).**  Blobs 91 and
+    147 each had one/two wrong bytes from a RIP operand whose target RVA was
+    far outside the image (blob 91: target 0x6033082 with sizeOfImage
+    0x324000); the DLL left the displacement unchanged.  Phase snapshots
+    traced the write to pa30_transform_amd64_rip (not the inferred-pointer
+    pass).  Skipping RIP rewrites when targetRVA is outside [0,sizeOfImage)
+    makes blobs 91 and 147 byte-exact.  Caveat: blob 148's DLL does rewrite
+    some out-of-range operands, so that blob newly differs by two bytes;
+    the net is 17 -> 16 divergent root blobs with no change to 758/759.
+    The remaining root blobs are 148, 249, 314, 320 (plus 12 script cases).

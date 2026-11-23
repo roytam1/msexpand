@@ -3157,8 +3157,8 @@ static void pa30_transform_amd64_rip(unsigned char *buf, unsigned long len,
                  * whole instruction, including any immediate after disp32. */
                 siteRVA = (long)(begin + (p - start) + (unsigned long)step);
                 targetRVA = siteRVA + rel;
-                /* The DLL does not range-check the target: MapRva is applied
-                 * to whatever value the operand holds. */
+                if (targetRVA < 0 || (unsigned long)targetRVA >= sizeOfImage)
+                { p += (unsigned long)step; continue; }
                 if (!(hint && (hint[f] | hint[f + 1] |
                                hint[f + 2] | hint[f + 3]) & 0x01))
                 {
