@@ -1682,3 +1682,14 @@ Phase D is the genuine open-ended piece.
     even for non-CLI deltas.  A misaligned AMD64 pdata exception-handler
     rewrite is also skipped.  W11 native verification reaches
     **2728/2732**; KB2959977 513/513 and KB5131083 209/209 remain byte-exact.
+
+    **Rift buffer overflow and short jumps (part 65).**  The 1024-entry
+    pending buffer of `rift_reverse` overflowed on deltas with large rift
+    tables (1689 breakpoints in system.printing), corrupting the target COFF
+    timestamp and most of the seed.  Enlarging it to 4096 entries reduces the
+    four remaining mismatches from thousands of bytes each to 2-23 bytes.
+    `RiftTransformRelativeJmpsI386` only visits jumps whose original rel32 is
+    outside [-128,127]; folding short jumps rewrote thunk stubs the DLL
+    leaves alone.  W11 native verification reaches **2729/2732**; the three
+    remaining files differ only in a few CLI signature-token bytes.
+    KB2959977 513/513 and KB5131083 209/209 remain byte-exact.
