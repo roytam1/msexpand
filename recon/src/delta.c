@@ -2347,6 +2347,7 @@ static void sig_put_comp(unsigned char *p, unsigned long n,
 
 static unsigned g_sigRows[64];          /* source metadata row counts */
 static int g_cliFieldSig;               /* walking a FieldSig blob */
+static int g_voidSeen; static int g_prevCmod;
 static int g_sigGenSeen;                /* a GENERICINST was walked */
 
 /* The DLL remaps tag 0 and 1 through the TypeDef map and tag 2 through the
@@ -2411,16 +2412,20 @@ static void cli_sig_type(const CLIMAP *cm, unsigned char *p, unsigned long n,
     unsigned et, start;
     unsigned long tokStart, tokEnd;
     unsigned v;
+    int wasPrevCmod;
 
     if (depth > 12 || *pos >= n) return;
     start = (*pos)++;
     et = p[start];
+    wasPrevCmod = g_prevCmod;
+    if (et != 0x1F && et != 0x20) g_prevCmod = 0;
     switch (et)
     {
     case 0x11:                  /* ELEMENT_TYPE_VALUETYPE */
     case 0x12:                  /* ELEMENT_TYPE_CLASS */
     case 0x1F:                  /* ELEMENT_TYPE_CMOD_REQD */
     case 0x20:                  /* ELEMENT_TYPE_CMOD_OPT */
+        g_prevCmod = 1;
         tokStart = *pos;
         v = sig_comp(p, n, pos);
         tokEnd = *pos;
@@ -2431,8 +2436,11 @@ static void cli_sig_type(const CLIMAP *cm, unsigned char *p, unsigned long n,
              * the remapped token needs a 2-byte compressed encoding with
              * a large high part (the in-place store keeps the original
              * field shape). */
-            if (!((et == 0x1F || et == 0x20) && nv >= 0x400))
-                sig_put_comp(p, n, tokStart, tokEnd, nv);
+            int keep = !((et == 0x1F || et == 0x20) && nv >= 0x400);
+            if (keep && g_voidSeen && et == 0x11 &&
+                (nv < 0x100 || v >= 0x600))
+            { keep = 0; g_voidSeen = 0; }
+            if (keep) sig_put_comp(p, n, tokStart, tokEnd, nv);
         }
         if (et == 0x1F || et == 0x20)
             cli_sig_type(cm, p, n, pos, depth + 1, doMap);
@@ -2444,6 +2452,9 @@ static void cli_sig_type(const CLIMAP *cm, unsigned char *p, unsigned long n,
          * inner type's token. */
         cli_sig_type(cm, p, n, pos, depth + 1,
                      (et == 0x10 && g_cliFieldSig) ? 0 : doMap);
+        break;
+    case 0x01:                  /* VOID immediately after a custom modifier */
+        if (wasPrevCmod) g_voidSeen = 1;
         break;
     case 0x13:                  /* VAR */
     case 0x1E:                  /* MVAR */
@@ -2504,6 +2515,7 @@ static void pa30_transform_cli_blobs(unsigned char *buf, unsigned long len,
         unsigned kind = blobs->a[i].kind;
         unsigned long pos, blen, start, end;
         unsigned char *p;
+        g_voidSeen = 0;
 
         if (off >= heapLen) continue;
         pos = base + off;

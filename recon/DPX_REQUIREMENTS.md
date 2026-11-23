@@ -1839,3 +1839,14 @@ Phase D is the genuine open-ended piece.
     disputed operands in blobs 91/147 (82 2D <disp32> <imm8>).  Skipping
     opcode 0x82 instead of range-checking fixes blobs 91 and 147 while blob
     148 stays byte-exact: 16 -> 15 divergent root blobs.
+
+    **VOID-after-CMOD signature state (part 69, continued).**  Dumping the
+    element-type path at each signature token write showed that every
+    KEEP case across blobs 320, 758 and 759 has an ELEMENT_TYPE_VOID (01)
+    immediately following a custom modifier (20/1F), e.g. paths 20010F11
+    and 200120200F11.  The DLL stops remapping VALUETYPE tokens after that
+    sequence.  Tracking a g_prevCmod/g_voidSeen walker state and suppressing
+    a VALUETYPE write when the mapped token drops below 0x100 or the source
+    token is >= 0x600 makes blobs 314, 317, 320 byte-exact while 758/759
+    stay correct: 15 -> 13 divergent root blobs.  A simpler rule without
+    the value condition regressed 758/759, so both parts are needed.
