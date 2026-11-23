@@ -2375,8 +2375,10 @@ static void cli_sig_type(const CLIMAP *cm, unsigned char *p, unsigned long n,
         cli_sig_type(cm, p, n, pos, depth + 1, doMap);
         {
             unsigned argc = sig_comp(p, n, pos), i;
+            /* The DLL remaps the GENERICINST class/valuetype token but only
+             * walks (not remaps) the generic argument types. */
             for (i = 0; i < argc && *pos < n; ++i)
-                cli_sig_type(cm, p, n, pos, depth + 1, doMap);
+                cli_sig_type(cm, p, n, pos, depth + 1, 0);
         }
         break;
     case 0x1B:                  /* FNPTR */
@@ -2429,8 +2431,9 @@ static void pa30_transform_cli_blobs(unsigned char *buf, unsigned long len,
             if (end <= start || end > heapEnd) continue;
             p = buf;
         }
-        if ((kind == 0 || kind == 2) && start < end && p[start] == 0x06)
-            kind = 3;                  /* FieldSig referenced via kind 0/2 */
+        if ((kind == 0 || kind == 2 || kind == 9) && start < end &&
+            p[start] == 0x06)
+            kind = 3;                  /* FieldSig in a blob/MemberRef/StandAloneSig slot */
         if (kind >= 1 && kind <= 5)
         {
             unsigned long q = start;
@@ -4945,6 +4948,18 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
                                                          &cliSrc, &cliMap,
                                                          &blobs);
                                 PHASE("cli-blobs");
+                                /* RiftTransform_AMD64 runs the disassembly and
+                                 * pdata passes after the CLI passes even for
+                                 * managed sources; they rewrite RIP-relative
+                                 * operands in any native code the image has. */
+                                if (h.code == 8)
+                                {
+                                    pa30_transform_amd64_rip(prepared, sourceLen,
+                                        rt, rn, sizeOfImage, hintBuf);
+                                    pa30_transform_pdata_amd64(prepared, sourceLen,
+                                        rt, rn, sizeOfImage);
+                                }
+                                PHASE("cli-amd64");
                             }
                             else
                             {
