@@ -1721,3 +1721,26 @@ Phase D is the genuine open-ended piece.
     writes closes the last gap: W11 NDP481 native verification is now
     **2732/2732** byte-exact, with KB2959977 513/513 and KB5131083 209/209
     also byte-exact.
+
+    **ARM64 package investigation (part 69, in progress).**  The OS-delegated
+    expansion of the ARM64 NDP481 MSU (`kb5127694-arm64`) produces 2124
+    targets byte-for-byte.  Native expansion crashed at patch 248: the
+    basis produced by an earlier patch had its PE exception-directory RVA
+    rewritten from 0x119000 to 0xa170a1e0, so the AMD64 pdata transform
+    followed an out-of-range RVA.  Comparing every output file against
+    OS-delegated ground truth showed 552/674 mismatches, but re-testing each
+    delta with a *correct* basis reduced genuine root causes to 19/842 blobs
+    -- the vast majority was cascade from corrupted upstream bases.
+    Two fixes land here: (a) the AMD64 RIP/pdata seeds are gated on the PE
+    machine being 0x8664 (ARM64 and x86 images were being disassembled as
+    x64); (b) NormalizeCoffImage no longer runs when the pre blob is absent
+    (preLen <= 16), because peImageBase/peTimeStamp read as zero and rebasing
+    zeroed the source ImageBase field -- e.g. blob 1 (system.ni.dll) had
+    exactly 4 bytes clobbered at 0xB2.  With these fixes blob 1, blob 9 and
+    blob 242 (the original crash) are byte-exact, and the crash is gone.
+    Remaining root causes: blob 6 (system.core.ni.dll) differs in five CLI
+    metadata row-index cells in the seed (DLL writes 0x1f/0x1f/0x16/0x1f/
+    0x46 where we keep the source values 0x0a/0x0a/0x11/0x1a/0x2f); six
+    small deltas (blobs 91, 147, 249, 314, 317, 320) differ in 1-16 x86
+    relcall / metadata bytes; eleven further blobs need re-checking.  No ARM64
+    regressions have been introduced, but full ARM64 parity is not yet reached.

@@ -3014,6 +3014,19 @@ static int pa30_x64_decode(const unsigned char *start,
     return (int)(p - start);
 }
 
+/* The x64 disassembly/pdata passes below are only valid for machine 0x8664;
+ * ARM64 images have a different .pdata record size and an entirely different
+ * instruction encoding, so running them there walks garbage and can loop
+ * forever. */
+static int pa30_is_x64_image(const unsigned char *b, unsigned long len)
+{
+    unsigned long pe;
+    if (len < 0x40) return 0;
+    pe = rd32(b + 0x3C);
+    if (pe + 6 > len || memcmp(b + pe, "PE\0\0", 4)) return 0;
+    return rd16(b + pe + 4) == 0x8664;
+}
+
 static void pa30_transform_amd64_rip(unsigned char *buf, unsigned long len,
                                      const RIFTENTRY *rt, unsigned rn,
                                      unsigned long sizeOfImage,
@@ -4861,6 +4874,14 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
             oriftN = w + 1;
         }
 
+        /* An empty pre blob makes the DLL use a single identity-shift rift;
+         * the source section map is not composed into the offset rift. */
+        if (preLen <= 16 && orift)
+        {
+            orift[0].left = 0;
+            orift[0].right = -( __int64)sourceLen;
+            oriftN = 1;
+        }
         if (getenv("PA30_ORIFT"))
         {
             FILE *rf = fopen(getenv("PA30_ORIFT"), "rb");
@@ -4916,12 +4937,23 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
                     memcpy(prepared, source, (size_t)sourceLen);
                     /* NormalizeCoffImage writes the target COFF timestamp
                      * into the source PE before the delta is decoded. */
-                    prepared[lfa + 8]     = (unsigned char)(peTimeStamp & 0xFF);
-                    prepared[lfa + 9]     = (unsigned char)((peTimeStamp >> 8) & 0xFF);
-                    prepared[lfa + 10]    = (unsigned char)((peTimeStamp >> 16) & 0xFF);
-                    prepared[lfa + 11]    = (unsigned char)((peTimeStamp >> 24) & 0xFF);
+                    /* With no pre blob the timestamp is unknown; writing a
+                     * zero here would clobber the high half of the field that
+                     * the patch only partially overwrites. */
+                    if (preLen > 16)
+                    {
+                        prepared[lfa + 8]  = (unsigned char)(peTimeStamp & 0xFF);
+                        prepared[lfa + 9]  = (unsigned char)((peTimeStamp >> 8) & 0xFF);
+                        prepared[lfa + 10] = (unsigned char)((peTimeStamp >> 16) & 0xFF);
+                        prepared[lfa + 11] = (unsigned char)((peTimeStamp >> 24) & 0xFF);
+                    }
                     /* Rebase the source PE to the target image.  PE32 stores
-                     * a 32-bit ImageBase at +0x1C, PE32+ a 64-bit one at +0x18. */
+                     * a 32-bit ImageBase at +0x1C, PE32+ a 64-bit one at +0x18.
+                     * With no pre blob there is no target ImageBase (it reads
+                     * as zero), so rebasing would zero the source's ImageBase
+                     * field.  The DLL only runs NormalizeCoffImage when the
+                     * target info is present. */
+                    if (preLen > 16)
                     {
                         unsigned short magic = rd16(prepared + lfa + 24);
                         unsigned __int64 oldBase;
@@ -5008,7 +5040,8 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
                                  * pdata passes after the CLI passes even for
                                  * managed sources; they rewrite RIP-relative
                                  * operands in any native code the image has. */
-                                if (h.code == 8)
+                                if (h.code == 8 &&
+                                    pa30_is_x64_image(prepared, sourceLen))
                                 {
                                     pa30_transform_amd64_rip(prepared, sourceLen,
                                         rt, rn, sizeOfImage, hintBuf);
@@ -5017,8 +5050,11 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
                                 }
                                 PHASE("cli-amd64");
                             }
-                            else
+                            else if (h.flags & 0x07F87FFEUL)
                             {
+                            /* The DLL only runs the seed transforms whose
+                             * flag bits are set; some deltas (notably ARM64
+                             * relinks) enable none of them. */
                             if (getenv("PA30_DEBUG")) fprintf(stderr, "SEED pointers\n");
                             PHASE("nat-start");
                             pa30_transform_pointers(prepared, sourceLen, rt, rn,
@@ -5026,12 +5062,15 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
                                 sizeOfImage, sizeOfHeaders, hintBuf);
                             PHASE("nat-pointers");
                             if (getenv("PA30_DEBUG")) fprintf(stderr, "SEED amd64 rip\n");
-                            pa30_transform_amd64_rip(prepared, sourceLen, rt, rn,
-                                                     sizeOfImage, hintBuf);
-                            PHASE("nat-amd64rip");
-                            if (getenv("PA30_DEBUG")) fprintf(stderr, "SEED pdata\n");
-                            pa30_transform_pdata_amd64(prepared, sourceLen, rt, rn,
-                                                       sizeOfImage);
+                            if (pa30_is_x64_image(prepared, sourceLen))
+                            {
+                                pa30_transform_amd64_rip(prepared, sourceLen, rt, rn,
+                                                         sizeOfImage, hintBuf);
+                                PHASE("nat-amd64rip");
+                                if (getenv("PA30_DEBUG")) fprintf(stderr, "SEED pdata\n");
+                                pa30_transform_pdata_amd64(prepared, sourceLen, rt, rn,
+                                                           sizeOfImage);
+                            }
                             /* Even when the delta's target has no CLI
                              * metadata, a managed source image still needs
                              * its metadata RVA cells remapped; the DLL runs
