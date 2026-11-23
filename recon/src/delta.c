@@ -4943,7 +4943,7 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
                              * metadata, a managed source image still needs
                              * its MethodDef RVA cells remapped; run the CLI
                              * metadata pass with the empty target/map. */
-                            if (h.code == 2 && !(h.flags & 0x1))
+                            if (!(h.flags & 0x1))
                             {
                                 CLIMETA nc;
                                 CLIBLOBSET nb;

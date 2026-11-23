@@ -1661,7 +1661,7 @@ Phase D is the genuine open-ended piece.
     remapped through the compression rift even though `PRE cli=0`.  The
     source PE is managed; only the target's CLI metadata is absent.  The
     native seed path now parses the source CLI metadata locally and runs the
-    CLI metadata RVA pass with an empty target/map, gated to i386 deltas
-    (`code == 2`) without the E8-translation flag.  W11 native verification
-    rises to **2690/2732**; KB2959977 513/513 and KB5131083 209/209 remain
-    byte-exact.
+    CLI metadata RVA pass with an empty target/map, gated only to deltas
+    without the E8-translation flag (it also applies to ARM64 deltas whose
+    target has no CLI metadata).  W11 native verification rises to
+    **2691/2732**; KB2959977 513/513 and KB5131083 209/209 remain byte-exact.
