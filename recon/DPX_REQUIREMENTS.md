@@ -1787,3 +1787,23 @@ Phase D is the genuine open-ended piece.
     not separate the cases, so that change was reverted.  Remaining diffs:
     blobs 91/147/320 in CLI signature tokens, blob 314 one byte, blob 249
     three x86 bytes, blob 317 ten CMOD bytes.
+
+    **CliMap and signature-walker verification (part 69, continued).**  The
+    DLL's own CliMap was dumped with dumpclimap205.gdb at RVA 0x3AD00 and
+    compared entry-by-entry: its TypeDef rift for blob 317 (12 entries,
+    0->0, 3->210, ..., 153->438) and blob 758 (23 entries, including the
+    negative rifts 255->2, 258->14) are byte-identical to our parse.  Our
+    rift_map_value lookup also matches the DLL's RiftTable::Lookup.  The
+    residual signature bytes are therefore a signature-walker *state*
+    difference, not a map problem.  Instrumenting every token write showed
+    the DLL leaves a token at its source value whenever remapping would grow
+    its compressed encoding from one byte to two (e.g. blob 317: 48->896,
+    101->949; blob 758: 93->145, 121->173), but it also leaves some and
+    remaps others in ways that depend on walker context.  Three policies were
+    tested and reverted: skipping all CMOD writes (fixes blob 317's ten bytes
+    but regresses 758/759 by 52/6), skipping any width change (regresses
+    seven blobs, 18->25), and skipping only one-to-two-byte growth (no
+    improvement, no regressions).  Resolving these six blobs requires
+    matching the DLL's complete signature-walker state machine rather than
+    a single write policy.  Tree remains at 18/842 divergent with no
+    regressions.
