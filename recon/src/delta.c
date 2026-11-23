@@ -4805,6 +4805,28 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
             free(cr);
         }
 
+        /* Reduce the final (possibly CLI-merged) table.  The DLL always runs
+         * RiftTable::InternalReduce on the final Sum; doing this only inside
+         * the CLI branch left redundant zero-rift entries in native deltas. */
+        if (orift && oriftN > 1)
+        {
+            unsigned k, w;
+            /* Both the base and the merged tables are already sorted. */
+            for (k = 1, w = 0; k < oriftN; ++k)
+            {
+                if (orift[k].left == orift[w].left)
+                {
+                    orift[w] = orift[k];
+                    continue;
+                }
+                if (orift[w].right - orift[w].left ==
+                    orift[k].right - orift[k].left)
+                    continue;
+                orift[++w] = orift[k];
+            }
+            oriftN = w + 1;
+        }
+
         if (getenv("PA30_ORIFT"))
         {
             FILE *rf = fopen(getenv("PA30_ORIFT"), "rb");
