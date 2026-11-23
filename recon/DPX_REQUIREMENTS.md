@@ -1693,3 +1693,14 @@ Phase D is the genuine open-ended piece.
     leaves alone.  W11 native verification reaches **2729/2732**; the three
     remaining files differ only in a few CLI signature-token bytes.
     KB2959977 513/513 and KB5131083 209/209 remain byte-exact.
+
+    **Signature walker quirks (part 66).**  For a FieldSig the DLL walks
+    through `ELEMENT_TYPE_BYREF` without remapping the inner type's token,
+    and it leaves the first local's tokens alone when a LocalSig's first
+    type begins with a custom modifier.  Matching both makes the amd64
+    system.printing target byte-exact.  W11 native verification reaches
+    **2730/2732**.  The last two files differ only where our heuristic x64
+    length decoder drifts from the DLL's table-driven disassembler boundary
+    (the `A1` moffs and `0F 3A` immediate lengths), so it rewrites or skips
+    the adjacent relative branch differently.  KB2959977 513/513 and
+    KB5131083 209/209 remain byte-exact.
