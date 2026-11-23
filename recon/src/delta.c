@@ -1156,7 +1156,7 @@ static unsigned rift_multiply(const RIFTENTRY *a, unsigned an,
         d = endB - x;
         if ((unsigned __int64)(endA + INT64_MIN) > (unsigned __int64)d)
         {
-            while (on < 512)
+            while (on < 2048)
             {
                 __int64 pos;
                 acc += d + 1;
@@ -1193,7 +1193,7 @@ static unsigned rift_multiply(const RIFTENTRY *a, unsigned an,
         prevLeft = left_i;
         prevPos = right_i;
         prevEnd = endB;
-        while (on < 512 &&
+        while (on < 2048 &&
                (unsigned __int64)(end_i - prevLeft) >
                (unsigned __int64)(prevEnd - prevPos))
         {
@@ -4636,7 +4636,7 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
          *   t3  = {srcLen -> 0} * t2r   (shift into combined-buffer space)
          * then keep the positive-left entries, dropping repeated rifts. */
         {
-            RIFTENTRY t0[64], t1[512], t2[512], t2r[512], t3[512];
+            RIFTENTRY t0[64], t1[2048], t2[2048], t2r[2048], t3[2048];
             unsigned n0 = 0, n1, n2, n2r, n3;
             unsigned long lfa0;
             if (sourceLen >= 0x40)
