@@ -2793,7 +2793,7 @@ static int pa30_x64_decode(const unsigned char *start,
 {
     /* ripOff is also used for a rel32 branch operand (E8/E9/0F8x). */
     const unsigned char *p = start;
-    int opsz16 = 0, rexw = 0;
+    int opsz16 = 0, rexw = 0, addrsz32 = 0;
     int hasModrm = 0, imm = 0;
     unsigned op;
 
@@ -2804,7 +2804,8 @@ static int pa30_x64_decode(const unsigned char *start,
         if (p >= end) return 0;
         c = *p;
         if (c == 0x66) { opsz16 = 1; ++p; continue; }
-        if (c == 0x67 || c == 0xF0 || c == 0xF2 || c == 0xF3 ||
+        if (c == 0x67) { addrsz32 = 1; ++p; continue; }
+        if (c == 0xF0 || c == 0xF2 || c == 0xF3 ||
             c == 0x2E || c == 0x36 || c == 0x3E || c == 0x26 ||
             c == 0x64 || c == 0x65) { ++p; continue; }
         break;
@@ -2954,7 +2955,8 @@ static int pa30_x64_decode(const unsigned char *start,
             imm = 3;
             break;
         case 0xA0: case 0xA1: case 0xA2: case 0xA3:
-            imm = rexw ? 8 : 4;
+            /* In 64-bit mode the moffs form always carries a 64-bit offset. */
+            imm = addrsz32 ? 4 : 8;
             break;
         default:
             break;
