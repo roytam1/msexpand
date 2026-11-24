@@ -2355,3 +2355,26 @@ Phase D is the genuine open-ended piece.
     `PA30_NO_OS=1`, matching OS delegation.  Regressions stay green:
     KB5022508 127/141, KB5131083 209/209, NDP481 arm64 2124/2124,
     KB2959977 513/513.
+
+    **KB5064399 x86 gaps (part 89).**  `windows10.0-kb5064399-arm64-ndp48`
+    starts at 475/480 with five x86 failures.  Direct tests with the correct
+    basis show blobs 30 and 79 are already exact, so those two are cascades.
+    Seed dumps and a per-pass watch found three distinct causes for the rest:
+
+      - Blob 76: an E9 opcode inside the export `AddressOfNames` table was
+        decoded by `pa30_transform_reljmps`, which corrupted a name pointer.
+        Marking the export directory in the hint buffer fixes it.
+      - Blob 78: an E8 byte inside an import-by-name string was decoded by
+        `pa30_transform_relcalls`.  Marking every imported name string in the
+        hint buffer fixes it.  The DLL's own hint bytes at these sites are 3.
+      - Blob 19 (`clr.dll`) still fails with 23 output bytes.  Its seed has
+        421 differing bytes at RVA cells such as file offset 0xAB832
+        (source 0x00116850, DLL 0x00050F3A); no pass in our pipeline writes
+        them, and the DLL hint bytes there are zero.  The basis `mscorwks.dll`
+        has five BSJB roots, so this is another NGEN metadata-root case:
+        the DLL rewrites cells of an earlier IL root that our CLI metadata
+        parser does not select.  Fixing it needs the exact root choice used
+        by the DLL's CLI metadata reader.
+
+    The package now verifies **478/480**; the remaining target is `clr.dll`
+    plus its `wpfgfx_v0400.dll` cascade.

@@ -2841,6 +2841,63 @@ static void pa30_mark_nonexe(const unsigned char *buf, unsigned long len,
         for (k = 0; k < hdr; ++k)
             mask[k] |= 0x03U;
     }
+    /* Import-by-name structures are data.  The DLL marks their hint and name
+     * bytes so an E8/E9 inside a name is not decoded as a branch. */
+    {
+        unsigned long ir = rd32(buf + PA30_DD(buf, opt) + 8);
+        unsigned long io, d, lim;
+        if (ir)
+        {
+            io = pa30_rva_off(buf, len, ir);
+            if (io != 0xFFFFFFFFUL)
+            {
+                lim = len;
+                for (d = io; d + 20 <= lim; d += 20)
+                {
+                    unsigned long oft = rd32(buf + d);
+                    unsigned long ft = rd32(buf + d + 16);
+                    unsigned long t, th[2];
+                    int q;
+                    if (!rd32(buf + d + 12) && !rd32(buf + d + 8) &&
+                        !rd32(buf + d + 4)) break;
+                    th[0] = oft; th[1] = ft;
+                    for (q = 0; q < 2; ++q)
+                    {
+                        if (!th[q]) continue;
+                        t = pa30_rva_off(buf, len, th[q]);
+                        if (t == 0xFFFFFFFFUL) continue;
+                        while (t + 4 <= len)
+                        {
+                            unsigned long v = rd32(buf + t);
+                            unsigned long no;
+                            if (!v) break;
+                            t += 4;
+                            if (v & 0x80000000UL) continue;
+                            no = pa30_rva_off(buf, len, v);
+                            if (no == 0xFFFFFFFFUL || no + 2 > len) continue;
+                            for (k = no; k < len && buf[k]; ++k) mask[k] |= 0x01U;
+                            if (k < len) mask[k] |= 0x01U;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    /* The export directory is data; the DLL marks it so the disassemblers
+     * skip E8/E9 bytes that occur inside its tables. */
+    {
+        unsigned long er = rd32(buf + PA30_DD(buf, opt));
+        unsigned long es = rd32(buf + PA30_DD(buf, opt) + 4);
+        unsigned long eo;
+        if (er && es)
+        {
+            eo = pa30_rva_off(buf, len, er);
+            if (eo != 0xFFFFFFFFUL && es > len - eo) es = len - eo;
+            if (eo != 0xFFFFFFFFUL)
+                for (k = 0; k < es; ++k)
+                    mask[eo + k] |= 0x01U;
+        }
+    }
 }
 
 /* Mirrors the DLL's RiftTransformRelocationsI386Component::
