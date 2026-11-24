@@ -3118,6 +3118,17 @@ static int pa30_is_x64_image(const unsigned char *b, unsigned long len)
     return rd16(b + pe + 4) == 0x8664;
 }
 
+/* IA64 PE images use machine 0x0200; their pdata records are the same
+ * 12-byte RUNTIME_FUNCTION layout as x64. */
+static int pa30_is_ia64_image(const unsigned char *b, unsigned long len)
+{
+    unsigned long pe;
+    if (len < 0x40) return 0;
+    pe = rd32(b + 0x3C);
+    if (pe + 6 > len || memcmp(b + pe, "PE\0\0", 4)) return 0;
+    return rd16(b + pe + 4) == 0x0200;
+}
+
 static void pa30_transform_amd64_rip(unsigned char *buf, unsigned long len,
                                      const RIFTENTRY *rt, unsigned rn,
                                      unsigned long sizeOfImage,
@@ -3210,7 +3221,7 @@ static void pa30_transform_pdata_amd64(unsigned char *buf, unsigned long len,
     es = rd32(buf + dd + 3 * 8 + 4);
     if (!er || es < 12) return;
     off = pa30_rva_off(buf, len, er);
-    if (off == 0xFFFFFFFFUL || es > len - off) return;
+    if (off == 0xFFFFFFFFUL || off >= len || es > len - off) return;
     end = off + es - 12;
     for (; off <= end; off += 12)
     {
@@ -5222,6 +5233,9 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
                                         sourceLen, &nc, &cliTgt, &cliMap,
                                         rt, rn, &nb);
                             }
+                            if (pa30_is_ia64_image(prepared, sourceLen))
+                                pa30_transform_pdata_amd64(prepared, sourceLen,
+                                                           rt, rn, sizeOfImage);
                             PHASE("nat-pdata");
                             if (getenv("PA30_DEBUG")) fprintf(stderr, "SEED relocs\n");
                             pa30_transform_relocs(prepared, sourceLen, rt, rn,

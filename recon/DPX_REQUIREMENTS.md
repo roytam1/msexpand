@@ -1908,3 +1908,16 @@ Phase D is the genuine open-ended piece.
     0x1DF57C once the LEA-disp8 skip is lifted, so those bytes come from a
     different site).  Implementing the IA64 bundle decoder is the next major
     piece of work; no speculative partial fix was committed.
+
+    **IA64 pdata transform (part 70, attempted).**  The DLL's
+    RiftTransformPdataIa64 remaps all three dwords of each 12-byte
+    RUNTIME_FUNCTION record, the same layout as x64.  We added the equivalent
+    call for machine 0x0200 (IA64) plus an `off >= len` guard to the shared
+    pdata routine (the old `es > len - off` check wrapped on an out-of-range
+    offset and crashed).  Native IA64 expansion now completes with Patching
+    3060/3279 (was 3058) and Verification 2237/3279.  A full port of
+    DisassemblerIa64::Bundle (GetAddressTypes/GetAddress/SetAddress, 18
+    operand types) was written but produced no address types on the sampled
+    bundles and regressed the full run, so it was removed.  The remaining
+    IA64 `.text` differences therefore come from a different mechanism than
+    the bundle address fields.
