@@ -1892,3 +1892,19 @@ Phase D is the genuine open-ended piece.
     Patching 3058/3279 and Verification 2237/3279 (remaining fails are
     genuine IA64/x86 transform gaps).  KB2959977 stays 513/513 and the
     ARM64 sweep stays at 12 (all RAW).
+
+    **IA64/x86 native gaps surveyed (part 70, open).**  With the hang and
+    crash fixed, the KB4539601 IA64 native run completes: Patching 3058/3279,
+    Verification 2237/3279.  821 of 3279 outputs differ from OS delegation.
+    Reviewing msdelta-ia64-wow32.dll.c shows the DLL runs two transforms our
+    recon does not implement at all: RiftTransformDisasmIa64Component::Transform
+    (walks .pdata RUNTIME_FUNCTION ranges, decodes 16-byte IA64 bundles via
+    DisassemblerIa64::Bundle, and rewrites each operand's address through
+    MapRva/SetAddress) and RiftTransformPdataIa64Component::Transform.  There
+    is no `ia64` code in recon/src/delta.c.  This accounts for the bulk of
+    the IA64 image mismatches; x86/wow64 deltas have smaller relcall/E8
+    differences (e.g. the first x86 mismatch, shell32.dll, is 3 bytes; its
+    relcall at file offset 0x1D166 already computes the DLL's exact value
+    0x1DF57C once the LEA-disp8 skip is lifted, so those bytes come from a
+    different site).  Implementing the IA64 bundle decoder is the next major
+    piece of work; no speculative partial fix was committed.
