@@ -2179,3 +2179,19 @@ Phase D is the genuine open-ended piece.
     (hook: `(0,-outLen)`, `(srcLen,-srcLen)`, `(srcLen+9580,-181144)`, ...).
     So the remaining blocker is the PRE rift parser itself (or an additional
     table source), not the Multiply/Reduce shape.  No code change kept.
+
+
+    **Composition-stage hooks (part 79).**  Hooked `RiftTable::Multiply`,
+    `Reverse` and `Sum` at their return points.  The DLL's stages for the
+    `smdiagnostics.dll` delta are: Multiply n=8, Multiply n=12 (both match
+    our t1/t2 exactly), then **Sum n=535**, Multiply n=532, Sum n=520.
+    Our equivalent stages produce only 5 entries.
+
+    The 500+ entries come from the CLI-map rift stage: the delta PRE carries
+    `cli=1`, a CLI map with 353 heap entries, and target CLI metadata -- but
+    the *source* CLI metadata is empty.  Our `cli_compression_rift` returns
+    early when `src->empty`, so the CLI rift is skipped entirely.  Removing
+    that skip produces 354 CLI entries / 358 merged ORIFT entries, but the
+    resulting offsets (built from empty source metadata) do not match the
+    DLL's, and the decode still fails.  No code change kept; the verified
+    baselines remain intact.
