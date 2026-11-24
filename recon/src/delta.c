@@ -4807,9 +4807,10 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
                     for (s = 0; s < nsec && n0 < 60; ++s)
                     {
                         unsigned long o = sh + 40 * s;
-                        unsigned long va = rd32(source + o + 12);
-                        unsigned long raw = rd32(source + o + 20);
+                        unsigned long va, raw;
                         if (o + 40 > sourceLen) break;
+                        va = rd32(source + o + 12);
+                        raw = rd32(source + o + 20);
                         if (raw == 0 || va == 0) continue;
                         t0[n0].left = (__int64)raw;
                         t0[n0].right = (__int64)va;

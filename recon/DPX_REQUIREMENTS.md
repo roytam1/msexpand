@@ -1881,3 +1881,14 @@ Phase D is the genuine open-ended piece.
     KB2959977 stays 513/513 and the ARM64 sweep stays at 12 (all RAW).
     The IA64 native run still fails on many deltas because earlier outputs are
     themselves wrong; those are separate missing-transform issues.
+
+    **Source section-table bounds (part 70, continued).**  The IA64 native run's
+    second failure (access violation after patch 909) came from DeltaApply's
+    source section map reading each section header's VirtualAddress and
+    PointerToRawData *before* checking that the 40-byte record fit in the
+    source.  A patched basis with a corrupt SizeOfOptionalHeader made the
+    section table point past the buffer.  Moving the bounds check ahead of
+    the reads removes the crash: the IA64 native run now completes with
+    Patching 3058/3279 and Verification 2237/3279 (remaining fails are
+    genuine IA64/x86 transform gaps).  KB2959977 stays 513/513 and the
+    ARM64 sweep stays at 12 (all RAW).
