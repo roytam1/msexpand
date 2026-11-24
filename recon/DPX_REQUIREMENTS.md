@@ -1934,3 +1934,13 @@ Phase D is the genuine open-ended piece.
     transforms or the IA64 bundle decoder.  The bundle decoder was removed
     again as it cannot affect the result.  This is the next area to
     investigate (a code=4/flags=02F83E decompression variant).
+
+    **IA64 rift verified (part 70, continued).**  For the code=4 delta
+    (mstscax.dll, flags 02F83E) we compared both the pre-reduce and final
+    offset rifts against the DLL: both are byte-identical (10 entries,
+    6333440->0, 6334560->-44448, ...).  The DLL's exact seed injected into
+    our DeltaApply still yields the same 6448 differing output bytes, and
+    forcing E8 translation raises that to 7832.  So neither the rift, the
+    seed transforms, nor E8 post-processing account for the difference; it
+    is in the core symbol/MATCH decode of compo_decompress for this delta
+    format.  No changes were committed from this investigation.
