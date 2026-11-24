@@ -3102,7 +3102,7 @@ static void pa30_transform_arm64(unsigned char *buf, unsigned long len,
     unsigned long pe, opt, sh, n, si, i;
     unsigned long pdRva, pdOff, pdSize;
     __int64 regs[32], mregs[32];
-    unsigned long adrpInsn[32], adrpPc[32], adrpPage[32];
+    unsigned long adrpInsn[32], adrpPc[32];
     unsigned char adrpValid[32];
 
     if (!pa30_is_arm64_image(buf, len)) return;
@@ -3127,7 +3127,6 @@ static void pa30_transform_arm64(unsigned char *buf, unsigned long len,
     memset(adrpValid, 0, sizeof(adrpValid));
     memset(adrpInsn, 0, sizeof(adrpInsn));
     memset(adrpPc, 0, sizeof(adrpPc));
-    memset(adrpPage, 0, sizeof(adrpPage));
 
     for (i = 0; i + 8 <= pdSize && pdOff + i + 8 <= len; i += 8)
     {
@@ -3234,12 +3233,6 @@ static void pa30_transform_arm64(unsigned char *buf, unsigned long len,
             }
             if (in.type == 4 && in.rd >= 0 && in.rd < 32)
             {
-                {
-                    unsigned long imm = ((w >> 29) & 3) |
-                        (((w >> 5) & 0x7FFFF) << 2);
-                    adrpPage[in.rd] = (pc & 0xFFFFF000UL) +
-                        (unsigned long)(pa30_sx((long)imm, 21) << 12);
-                }
                 adrpInsn[in.rd] = p;
                 adrpPc[in.rd] = pc;
                 adrpValid[in.rd] = 1;
