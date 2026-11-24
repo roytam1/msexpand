@@ -3047,7 +3047,9 @@ static unsigned long pa30_arm_branch_set(const ARMINSN *in, unsigned long pc,
     if (in->type == 9 || in->type == 17 || in->type == 18)
         return (w & 0xFF00001FUL) | (nd << 5);
     nd = ((unsigned long)(d >> 2)) & 0x3FFFUL;
-    return (w & 0xFF00001FUL) | (nd << 5);
+    /* TBZ/TBNZ keep their 5-bit test index in bits 23..19; imm14 is
+     * bits 18..5, so those high opcode bits must survive the rewrite. */
+    return (w & 0xFFF8001FUL) | (nd << 5);
 }
 
 static unsigned long pa30_arm_add_set(unsigned long w, long val)
@@ -3100,7 +3102,7 @@ static void pa30_transform_arm64(unsigned char *buf, unsigned long len,
     unsigned long pe, opt, sh, n, si, i;
     unsigned long pdRva, pdOff, pdSize;
     __int64 regs[32], mregs[32];
-    unsigned long adrpInsn[32], adrpPc[32];
+    unsigned long adrpInsn[32], adrpPc[32], adrpPage[32];
     unsigned char adrpValid[32];
 
     if (!pa30_is_arm64_image(buf, len)) return;
@@ -3125,6 +3127,7 @@ static void pa30_transform_arm64(unsigned char *buf, unsigned long len,
     memset(adrpValid, 0, sizeof(adrpValid));
     memset(adrpInsn, 0, sizeof(adrpInsn));
     memset(adrpPc, 0, sizeof(adrpPc));
+    memset(adrpPage, 0, sizeof(adrpPage));
 
     for (i = 0; i + 8 <= pdSize && pdOff + i + 8 <= len; i += 8)
     {
@@ -3132,7 +3135,14 @@ static void pa30_transform_arm64(unsigned char *buf, unsigned long len,
         unsigned long unwind = rd32(buf + pdOff + i + 4);
         unsigned long flen, start, limit, p, pc;
         if (!begin || !unwind) continue;
-        if (unwind & 3) flen = 4UL * (((unwind >> 2) & 0x7FF) + 1);
+        /* TransformFunction resets all of its state for every function. */
+        memset(regs, 0, sizeof(regs));
+        memset(mregs, 0, sizeof(mregs));
+        memset(adrpValid, 0, sizeof(adrpValid));
+        memset(adrpInsn, 0, sizeof(adrpInsn));
+        memset(adrpPc, 0, sizeof(adrpPc));
+        /* The DLL uses 2-byte units for the unwind function length. */
+        if (unwind & 3) flen = 2UL * ((unwind >> 2) & 0x7FF);
         else
         {
             unsigned long uo = 0xFFFFFFFFUL, t, k;
@@ -3146,7 +3156,7 @@ static void pa30_transform_arm64(unsigned char *buf, unsigned long len,
                 { uo = ra + (unwind - va); break; }
             }
             if (uo == 0xFFFFFFFFUL || uo + 4 > len) continue;
-            flen = 4UL * (rd32(buf + uo) & 0x3FFFF);
+            flen = 2UL * (rd32(buf + uo) & 0x3FFFF);
         }
         if (!flen || flen > len) continue;
         start = 0xFFFFFFFFUL;
@@ -3171,9 +3181,10 @@ static void pa30_transform_arm64(unsigned char *buf, unsigned long len,
             pc = begin + (p - start);
             w = rd32(buf + p);
             pa30_arm_parse(w, &in);
-            if (0 && (in.type == 3 || in.type == 4 || in.type == 5 || in.type == 6 ||
+            /* ADRP is handled only by the pair pass (DLL case 4 records state). */
+            if (in.type == 3 || in.type == 5 || in.type == 6 ||
                 in.type == 9 || in.type == 17 || in.type == 18 ||
-                in.type == 19 || in.type == 20 || in.type == 21 || in.type == 22))
+                in.type == 19 || in.type == 20 || in.type == 21 || in.type == 22)
             {
                 long tgt = pa30_arm_branch_target(&in, pc);
                 long mt = (long)pa30_map_rva(rt, rn, (unsigned long)tgt);
@@ -3218,37 +3229,37 @@ static void pa30_transform_arm64(unsigned char *buf, unsigned long len,
                     }
                     adrpValid[b] = 0;
                 }
-                else if (b >= 0 && b < 32 && in.add)
-                {
-                    /* Standalone memory operand: map the referenced address. */
-                    long memTarget = (long)(regs[b] + in.add);
-                    long mapped = (long)pa30_map_rva(rt, rn, (unsigned long)memTarget);
-                    long delta = mapped - (long)regs[b];
-                    unsigned long nmw = 0;
-                    if (in.memKind == 1) nmw = pa30_arm_add_set(w, delta);
-                    else if (in.memKind == 2) nmw = pa30_arm_ldridx_set(w, delta);
-                    else if (in.memKind == 3) nmw = pa30_arm_ldrimm_set(w, delta);
-                    if (nmw && nmw != w)
-                    {
-                        pa30_set_u32(buf, p, nmw);
-                        in.w = nmw;
-                        in.add = delta;
-                    }
-                }
+                /* An unpaired memory operand is not remapped: the DLL's
+                 * UpdateMemOpInstruction only re-emits the same target. */
             }
             if (in.type == 4 && in.rd >= 0 && in.rd < 32)
             {
+                {
+                    unsigned long imm = ((w >> 29) & 3) |
+                        (((w >> 5) & 0x7FFFF) << 2);
+                    adrpPage[in.rd] = (pc & 0xFFFFF000UL) +
+                        (unsigned long)(pa30_sx((long)imm, 21) << 12);
+                }
                 adrpInsn[in.rd] = p;
                 adrpPc[in.rd] = pc;
                 adrpValid[in.rd] = 1;
             }
             pa30_arm_emulate(&in, pc, regs);
             pa30_arm_emulate(&in, (unsigned long)pa30_map_rva(rt, rn, pc), mregs);
-            /* Any instruction other than ADRP that writes a register clears
-             * the "page base" state the DLL keeps for that register. */
-            if (in.type != 4 && in.rd >= 0 && in.rd < 32)
+            /* The DLL marks ADR (type 3) results as state 2, so they cannot
+             * act as an ADRP page base later. */
+            if (in.type == 3 && in.rd >= 0 && in.rd < 32)
                 adrpValid[in.rd] = 0;
         }
+    }
+
+    /* RiftTransformPdataARM64: each 8-byte exception record's BeginAddress
+     * is remapped in place; UnwindData is left alone. */
+    for (i = 0; i + 8 <= pdSize && pdOff + i + 8 <= len; i += 8)
+    {
+        unsigned long v = rd32(buf + pdOff + i);
+        unsigned long mapped = pa30_map_rva(rt, rn, v);
+        if (mapped != v) pa30_set_u32(buf, pdOff + i, mapped);
     }
 }
 

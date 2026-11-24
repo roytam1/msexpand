@@ -2078,3 +2078,23 @@ Phase D is the genuine open-ended piece.
     disabled in the port (enabling it made the seed worse).  Remaining work:
     reconstruct the DLL's hint array (its component offset +19 indexed by
     the code offset) before re-enabling branch rewrites.
+
+
+    **ARM64 seed transform, completed passes (part 73).**  Four corrections
+    to the part-72 port closed most of the remaining gap:
+
+      - the DLL decodes `.pdata` function lengths in 2-byte units (not 4),
+        so our function ranges were ~2x too long and decoded data as code;
+      - PC-relative branches are rewritten again, with a corrected TBZ/TBNZ
+        mask that preserves the 5-bit test index in bits 23..19;
+      - `RiftTransformPdataARM64` maps the BeginAddress (first DWORD) of each
+        8-byte exception record in place;
+      - the DLL resets all register-state arrays per function (we leaked
+        state across functions).
+
+    The `wcp.dll` delta (SSU blob 2) is now byte-exact natively, and the
+    `cbscore.dll` delta is down to 4 wrong output bytes.  Native SSU verification
+    improved from 115/228 to **174/228**, patching is 228/228.  About 27
+    ADRP/ADD/LDR words still differ per basis, split between over- and
+    under-rewrites; they come from the remaining per-register state nuances
+    of `TransformFunction` (states 1/2/0 and the writeback flag).
