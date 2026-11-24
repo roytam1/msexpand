@@ -1870,3 +1870,14 @@ Phase D is the genuine open-ended piece.
     basis and the OS-delegated output; the ARM64 native PA30 decoder has no
     known mismatches.  Combined with the x64 NDP481 2732/2732 result, the
     native expander matches OS delegation on every tested MSU.
+
+    **Resource-directory walker safety (part 70).**  Native expansion of the
+    IA64 KB4539601 MSU hung after patch 111: a corrupted basis from an earlier
+    patch contained a malformed resource tree whose subdirectory offsets
+    cycled (offset 104 at depth 17).  pa30_res_walk now rejects offsets at or
+    beyond the resource-directory size, bounds the size against 32-bit wrap,
+    and carries a per-walk 20000-call budget so a malformed/cyclic tree cannot
+    hang or overflow the decoder.  Verified: the IA64 run no longer hangs;
+    KB2959977 stays 513/513 and the ARM64 sweep stays at 12 (all RAW).
+    The IA64 native run still fails on many deltas because earlier outputs are
+    themselves wrong; those are separate missing-transform issues.

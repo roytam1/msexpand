@@ -3683,10 +3683,15 @@ static void pa30_transform_reljmps(unsigned char *buf, unsigned long len,
 static void pa30_res_walk(unsigned char *buf, unsigned long base,
                           unsigned long rsize, unsigned long rrva,
                           const RIFTENTRY *rt, unsigned rn,
-                          unsigned long relOff, int depth)
+                          unsigned long relOff, int depth,
+                           unsigned long *budget)
 {
-    unsigned long d = base + relOff, n, i, mbase;
-    if (depth > 16 || d + 16 > base + rsize) return;
+    unsigned long d, n, i, mbase;
+    if (*budget == 0) return;
+    --*budget;
+    if (depth > 16 || relOff >= rsize || rsize > 0xFFFFFFF0UL) return;
+    d = base + relOff;
+    if (d + 16 > base + rsize) return;
     mbase = (unsigned long)pa30_map_rva(rt, rn, (long)rrva);
     n = (unsigned long)rd16(buf + d + 12) + rd16(buf + d + 14);
     if (n > 4096) return;
@@ -3712,7 +3717,10 @@ static void pa30_res_walk(unsigned char *buf, unsigned long base,
                                             (long)(rrva + sub));
             pa30_set_u32(buf, e + 4,
                          0x80000000UL | (nr >= mbase ? nr - mbase : 0));
-            pa30_res_walk(buf, base, rsize, rrva, rt, rn, sub, depth + 1);
+            /* A subdirectory offset outside the resource directory is
+             * malformed; the DLL does not descend into it. */
+            if (sub < rsize)
+                pa30_res_walk(buf, base, rsize, rrva, rt, rn, sub, depth + 1, budget);
         }
         else if (target < rsize)
         {
@@ -3745,7 +3753,10 @@ static void pa30_transform_resources(unsigned char *buf, unsigned long len,
     if (!rrva || !rsize) return;
     off = pa30_rva_off(buf, len, rrva);
     if (off == 0xFFFFFFFFUL || off + rsize > len) return;
-    pa30_res_walk(buf, off, rsize, rrva, rt, rn, 0, 0);
+    {
+        unsigned long budget = 20000;
+        pa30_res_walk(buf, off, rsize, rrva, rt, rn, 0, 0, &budget);
+    }
 }
 
 static void pa30_transform_relocs(unsigned char *buf, unsigned long len,
