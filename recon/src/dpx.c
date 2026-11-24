@@ -13,8 +13,9 @@
 
 typedef struct tagSELECTION
 {
-    char entry[MAX_PATH];
-    char target[MAX_PATH];
+    char entry[4096];
+    char target[4096];
+    int index;                  /* entry position inside the cabinet */
 } SELECTION;
 
 int ProcessDpxNotification(const char *source, const char *name, int action)
@@ -111,8 +112,202 @@ static int CabExtractAllViaOS(const char *cabPath, const char *dir)
     return code == 0;
 }
 
+/* True when `path` starts with the MSCF cabinet signature. */
+static int DpxIsCabFile(const char *path)
+{
+    FILE *f;
+    char sig[4];
+    size_t n;
+
+    f = fopen(path, "rb");
+    if (!f)
+        return 0;
+    n = fread(sig, 1, sizeof(sig), f);
+    fclose(f);
+    return n == sizeof(sig) && memcmp(sig, "MSCF", 4) == 0;
+}
+
+/* Expand every entry of `cabPath` into `dir` (one level).  A folder our LZX
+ * decoder cannot handle is handed to the system expand.exe as a last resort. */
+static int DpxExtractCabLevel(const char *cabPath, const char *dir)
+{
+    int count;
+    int j;
+    int ok = 0;
+    int osFallback = 0;
+    char *namesBuf;
+    int *offsets;
+    int *status;
+    long bytes;
+
+    count = CabGetEntryCount(cabPath);
+    if (count <= 0)
+        return 0;
+    bytes = CabNamesBytes(cabPath);
+    if (bytes <= 0)
+        return 0;
+    namesBuf = (char *)malloc((size_t)bytes);
+    offsets = (int *)calloc((size_t)count, sizeof(int));
+    status = (int *)calloc((size_t)count, sizeof(int));
+    if (!namesBuf || !offsets || !status)
+    {
+        free(namesBuf);
+        free(offsets);
+        free(status);
+        return 0;
+    }
+    count = CabExtractAll(cabPath, dir, namesBuf, bytes, offsets, status, count);
+    if (count < 0)
+    {
+        free(namesBuf);
+        free(offsets);
+        free(status);
+        return 0;
+    }
+    ProgressStage("Nested CAB", count);
+    for (j = 0; j < count; ++j)
+    {
+        if (status[j] != 1 && !osFallback && CabExtractAllViaOS(cabPath, dir))
+        {
+            printf("Nested CAB folder extracted by the OS fallback: %s\n",
+                   OnlyFileName(cabPath));
+            osFallback = 1;
+        }
+        if (osFallback && status[j] != 1)
+        {
+            char to[4096];
+            char longTo[4096];
+            JoinPath(to, sizeof(to), dir, namesBuf + offsets[j]);
+            MakeLongPath(to, longTo, sizeof(longTo));
+            if (_access(longTo, 0) == 0)
+                status[j] = 1;
+        }
+    }
+    for (j = 0; j < count; ++j)
+    {
+        if (status[j] == 1)
+            ++ok;
+        ProgressItem("Nested CAB", j + 1, count, namesBuf + offsets[j],
+                     status[j] == 1 ? "OK" : "FAIL");
+    }
+    ProgressSummary("Nested CAB", ok, count);
+    free(namesBuf);
+    free(offsets);
+    free(status);
+    return ok;
+}
+
+/* Collect the cabinets a packaging descriptor in `dir` points at:
+ *   toc.xml              -- <Package CabName="SSU-....cab" .../>
+ *   cabinet.cablist.ini  -- Cabinet1 = Cab_1_for_KB....cab
+ * Returns how many names were stored. */
+static int DpxReadCabList(const char *dir, char names[][MAX_PATH], int max)
+{
+    static const char *descriptors[2] = { "toc.xml", "cabinet.cablist.ini" };
+    char path[MAX_PATH];
+    unsigned char *text = NULL;
+    long size = 0;
+    FILE *f;
+    int d;
+    int n = 0;
+
+    for (d = 0; d < 2 && n == 0; ++d)
+    {
+        JoinPath(path, sizeof(path), dir, descriptors[d]);
+        f = fopen(path, "rb");
+        if (!f)
+            continue;
+        if (fseek(f, 0, SEEK_END) == 0)
+        {
+            size = ftell(f);
+            if (size > 0 && size < 1024 * 1024 && fseek(f, 0, SEEK_SET) == 0)
+            {
+                text = (unsigned char *)malloc((size_t)size + 1);
+                if (text && fread(text, 1, (size_t)size, f) != (size_t)size)
+                {
+                    free(text);
+                    text = NULL;
+                }
+                if (text)
+                    text[size] = 0;
+            }
+        }
+        fclose(f);
+        if (!text)
+            continue;
+
+        {
+            long i;
+            for (i = 0; i + 4 <= size; ++i)
+            {
+                if (_strnicmp((const char *)text + i, ".cab", 4) != 0)
+                    continue;
+                {
+                    long b = i;
+                    long len;
+                    int k;
+                    int dup = 0;
+                    while (b > 0 && (isalnum(text[b - 1]) || text[b - 1] == '_' ||
+                                     text[b - 1] == '-' || text[b - 1] == '.'))
+                        --b;
+                    len = i + 4 - b;
+                    if (len <= 4 || len >= MAX_PATH)
+                        continue;
+                    for (k = 0; k < n; ++k)
+                        if ((long)strlen(names[k]) == len &&
+                            _strnicmp(names[k], (const char *)text + b, len) == 0)
+                            dup = 1;
+                    if (!dup && n < max)
+                    {
+                        memcpy(names[n], text + b, (size_t)len);
+                        names[n][len] = 0;
+                        ++n;
+                    }
+                }
+            }
+        }
+        free(text);
+        text = NULL;
+    }
+    return n;
+}
+
+/* Expand one cabinet into `dir`, then apply its CIX manifest and follow the
+ * packaging descriptors it carries.  Payload cabinets legitimately ship
+ * ordinary `.cab` data files (constraintindex.cab, ...), so the walk follows
+ * the descriptors instead of expanding every cabinet it meets. */
+static void DpxExpandCab(const char *cabPath, const char *dir, int depth)
+{
+    CreateDirectoryA(dir, NULL);
+    DpxExtractCabLevel(cabPath, dir);
+    (void)CixApplyCab(cabPath, dir);
+
+    if (depth < 6)
+    {
+        char names[64][MAX_PATH];
+        int n = DpxReadCabList(dir, names, 64);
+        int i;
+        for (i = 0; i < n; ++i)
+        {
+            char cab[MAX_PATH];
+            char sub[MAX_PATH];
+            size_t len;
+            JoinPath(cab, sizeof(cab), dir, names[i]);
+            if (!DpxIsCabFile(cab))
+                continue;
+            strncpy(sub, cab, sizeof(sub) - 1);
+            sub[sizeof(sub) - 1] = 0;
+            len = strlen(sub);
+            if (len > 4 && _stricmp(sub + len - 4, ".cab") == 0)
+                sub[len - 4] = 0;
+            DpxExpandCab(cab, sub, depth + 1);
+        }
+    }
+}
+
 /* A cabinet inside a cabinet is common in Windows Update packages: the MSU
- * holds a payload CAB which in turn holds CIX manifest and delta blobs. */
+ * holds a combined CAB which in turn holds the SSU and payload CABs, and the
+ * payload CAB lists its data cabinets in cabinet.cablist.ini. */
 static void DpxNestedCab(const char *cabPath, const char *targetDir)
 {
     int count;
@@ -123,24 +318,15 @@ static void DpxNestedCab(const char *cabPath, const char *targetDir)
         return;
     for (i = 0; i < count; ++i)
     {
-        char entry[MAX_PATH];
-        char full[MAX_PATH];
-        char sub[MAX_PATH];
-        char sig[4];
-        FILE *f;
-        int inner;
-        int j;
+        char entry[4096];
+        char full[4096];
+        char sub[4096];
         size_t n;
 
         if (!CabGetEntryName(cabPath, i, entry, sizeof(entry)))
             continue;
         JoinPath(full, sizeof(full), targetDir, entry);
-        f = fopen(full, "rb");
-        if (!f)
-            continue;
-        n = fread(sig, 1, sizeof(sig), f);
-        fclose(f);
-        if (n != sizeof(sig) || memcmp(sig, "MSCF", 4) != 0)
+        if (!DpxIsCabFile(full))
             continue;
 
         strncpy(sub, full, sizeof(sub) - 1);
@@ -148,54 +334,18 @@ static void DpxNestedCab(const char *cabPath, const char *targetDir)
         n = strlen(sub);
         if (n > 4 && _stricmp(sub + n - 4, ".cab") == 0)
             sub[n - 4] = 0;
-        CreateDirectoryA(sub, NULL);
-
-        inner = CabGetEntryCount(full);
-        if (inner > 0)
-        {
-            int ok = 0;
-            int osFallback = 0;
-            ProgressStage("Nested CAB", inner);
-            for (j = 0; j < inner; ++j)
-            {
-                char name[MAX_PATH];
-                char to[MAX_PATH];
-                int r;
-                if (!CabGetEntryName(full, j, name, sizeof(name)))
-                {
-                    ProgressItem("Nested CAB", j + 1, inner, "?", "FAIL");
-                    continue;
-                }
-                JoinPath(to, sizeof(to), sub, name);
-                EnsureParentDir(to);
-                r = CabExtractOne(full, name, to);
-                if (r == 1)
-                    ++ok;
-                else if (!osFallback &&
-                         CabExtractAllViaOS(full, sub))
-                {
-                    printf("Nested CAB folder extracted by the OS fallback: %s\n",
-                           OnlyFileName(full));
-                    osFallback = 1;
-                    ++ok;
-                }
-                ProgressItem("Nested CAB", j + 1, inner, name,
-                             (r == 1 || osFallback) ? "OK" : "FAIL");
-            }
-            ProgressSummary("Nested CAB", ok, inner);
-        }
-        (void)CixApplyCab(full, sub);
+        DpxExpandCab(full, sub, 0);
     }
 }
 
 int DpxExpandFile(void)
 {
     SELECTION *sel;
-    char targetDir[MAX_PATH];
-    char chosen[MAX_PATH];
-    char fullPath[MAX_PATH];
-    char entry[MAX_PATH];
-    char base[MAX_PATH];
+    char targetDir[4096];
+    char chosen[4096];
+    char fullPath[4096];
+    char entry[4096];
+    char base[4096];
     int count;
     int i;
     int nSel;
@@ -284,6 +434,7 @@ int DpxExpandFile(void)
             sel[nSel].entry[sizeof(sel[nSel].entry) - 1] = 0;
             strncpy(sel[nSel].target, fullPath, sizeof(sel[nSel].target) - 1);
             sel[nSel].target[sizeof(sel[nSel].target) - 1] = 0;
+            sel[nSel].index = i;
             ++nSel;
         }
         g_bIsThereFile = 1;
@@ -296,7 +447,7 @@ int DpxExpandFile(void)
         {
             int r;
             EnsureParentDir(sel[i].target);
-            r = CabExtractOne(src, sel[i].entry, sel[i].target);
+            r = CabExtractIndex(src, sel[i].index, sel[i].target);
             if (r != 1)
             {
                 failed = 1;
@@ -315,6 +466,9 @@ int DpxExpandFile(void)
         else
         {
             PrintMsg(MSG_DPX_COMPLETE);
+            /* The input cabinet may itself carry a CIX manifest (an SSU or a
+             * payload CAB handed to the tool directly). */
+            (void)CixApplyCab(src, targetDir);
             DpxNestedCab(src, targetDir);
         }
     }

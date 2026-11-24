@@ -10,54 +10,69 @@
 #include "cixapply.h"
 #include <time.h>
 
+/* CIX target paths in modern NDP packages routinely exceed MAX_PATH, so all
+ * file I/O here goes through \\?\ paths. */
 static int ReadWhole(const char *path, unsigned char **out, unsigned long *len)
 {
-    FILE *f;
-    long n;
+    char longPath[4096];
+    HANDLE h;
+    DWORD size;
     unsigned char *b;
 
-    f = fopen(path, "rb");
-    if (!f)
+    MakeLongPath(path, longPath, sizeof(longPath));
+    h = CreateFileA(longPath, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                    NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE)
         return -1;
-    fseek(f, 0, SEEK_END);
-    n = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    if (n < 0)
+    size = GetFileSize(h, NULL);
+    if (size == 0xFFFFFFFFUL)
     {
-        fclose(f);
+        CloseHandle(h);
         return -1;
     }
-    b = (unsigned char *)malloc((size_t)n ? (size_t)n : 1);
+    b = (unsigned char *)malloc((size_t)size ? (size_t)size : 1);
     if (!b)
     {
-        fclose(f);
+        CloseHandle(h);
         return -1;
     }
-    if (n && fread(b, 1, (size_t)n, f) != (size_t)n)
+    if (size)
     {
-        free(b);
-        fclose(f);
-        return -1;
+        DWORD got = 0;
+        if (!ReadFile(h, b, size, &got, NULL) || got != size)
+        {
+            free(b);
+            CloseHandle(h);
+            return -1;
+        }
     }
-    fclose(f);
+    CloseHandle(h);
     *out = b;
-    *len = (unsigned long)n;
+    *len = (unsigned long)size;
     return 0;
 }
 
 static int WriteWhole(const char *path, const unsigned char *b,
                       unsigned long n)
 {
-    FILE *f;
-    f = fopen(path, "wb");
-    if (!f)
+    char longPath[4096];
+    HANDLE h;
+
+    MakeLongPath(path, longPath, sizeof(longPath));
+    h = CreateFileA(longPath, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS,
+                    FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE)
         return -1;
-    if (n && fwrite(b, 1, (size_t)n, f) != (size_t)n)
+    if (n)
     {
-        fclose(f);
-        return -1;
+        DWORD written = 0;
+        if (!WriteFile(h, b, n, &written, NULL) || written != n)
+        {
+            CloseHandle(h);
+            return -1;
+        }
     }
-    fclose(f);
+    CloseHandle(h);
     return 0;
 }
 
@@ -79,11 +94,11 @@ static int IsDelta(const CIXFILE *f, const char *type)
 
 int CixApplyCab(const char *cabPath, const char *outDir)
 {
-    char tmpDir[MAX_PATH];
-    char manifestPath[MAX_PATH];
-    char target[MAX_PATH];
-    char sourcePath[MAX_PATH];
-    char patchPath[MAX_PATH];
+    char tmpDir[4096];
+    char manifestPath[4096];
+    char target[4096];
+    char sourcePath[4096];
+    char patchPath[4096];
     unsigned char *text = NULL;
     unsigned char *patch = NULL;
     unsigned char *basis = NULL;
@@ -99,29 +114,18 @@ int CixApplyCab(const char *cabPath, const char *outDir)
     int verified = 0;
     int i;
     int nEntries;
-    char entry[MAX_PATH];
-    int found = 0;
+    char entry[4096];
 
     nEntries = CabGetEntryCount(cabPath);
     if (nEntries <= 0)
         return 0;
-    for (i = 0; i < nEntries; ++i)
-    {
-        if (!CabGetEntryName(cabPath, i, entry, sizeof(entry)))
-            continue;
-        if (_stricmp(OnlyFileName(entry), "_manifest_.cix.xml") == 0)
-        {
-            found = 1;
-            break;
-        }
-    }
-    if (!found)
+    if (!CabFindEntry(cabPath, "_manifest_.cix.xml", entry, sizeof(entry)))
         return 0;
 
     /* When the CAB folder was unpacked by the OS fallback the manifest is
      * already in the output directory; prefer that copy. */
     {
-        char local[MAX_PATH];
+        char local[4096];
         int fromTemp = 0;
         JoinPath(local, sizeof(local), outDir, "_manifest_.cix.xml");
         if (_access(local, 0) == 0)
@@ -210,7 +214,7 @@ int CixApplyCab(const char *cabPath, const char *outDir)
                 bf = FindById(&cix, f->basisId);
                 if (bf)
                 {
-                    char basisPath[MAX_PATH];
+                    char basisPath[4096];
                     JoinPath(basisPath, sizeof(basisPath), outDir, bf->name);
                     if (ReadWhole(basisPath, &basis, &basisLen) != 0)
                     {
@@ -240,7 +244,7 @@ int CixApplyCab(const char *cabPath, const char *outDir)
             }
             else
             {
-                char from[MAX_PATH];
+                char from[4096];
                 JoinPath(from, sizeof(from), outDir,
                          f->hasSource ? f->sourceName : f->name);
                 if (ReadWhole(from, &basis, &basisLen) != 0)

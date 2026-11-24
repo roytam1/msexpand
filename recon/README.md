@@ -76,7 +76,14 @@ needed ??the CAB reader is compiled into the EXE.
   `msdelta.dll` is the default (`PA30_NO_OS=1` forces the partial native
   decoder, which is now byte-exact). Staged progress is reported per file for nested CAB extraction, patching and verification, with a short summary. The manifest SHA256 hashes are now really computed for every produced target. Verified on `KB2959977`: all 513 CIX targets match their manifest
   SHA256 hashes and lengths, as are the 209 targets of `KB5131083`, both
-  natively and via OS delegation. SFX `[Verify]` and `[Delete]` stages also
+  natively and via OS delegation. Nested packages are walked through their
+  packaging descriptors (`toc.xml`, `cabinet.cablist.ini`) so the payload
+  CABs of Windows 10 LCUs are expanded too, without expanding the `.cab`
+  data files shipped inside those payloads. CAB images are memory-mapped,
+  one decoded folder is cached at a time, extraction is one pass per cabinet
+  and `\\?\` long paths are supported; this lets the 884 MB combined CAB and
+  both 65,256-entry payload CABs of `KB5136493` expand natively.
+  SFX `[Verify]` and `[Delete]` stages also
   report per-file progress. Very large nested LZX folders (such as the Windows 11 NDP481 payload) can desync our native CAB LZX decoder; when native extraction fails the tool falls back to the system `expand.exe` for that folder (`CAB_NO_OS=1` keeps the failure visible). PA30 patching itself stays native; on the Windows 11 NDP481 MSU the native
   decoder now matches **all 2732/2732** CIX targets byte-for-byte (up from
   2523). The C port now also reads UNCOMPRESSED LZX bytes through `lzxGetBits(8)` exactly as the original `CabLzx.cpp` does.

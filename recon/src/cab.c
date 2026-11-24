@@ -324,13 +324,17 @@ typedef struct tagCABFILE
     unsigned long cbFile;
     unsigned long uoffFolderStart;
     int iFolder;
-    char name[MAX_PATH];
+    const char *name;           /* points into the read-only CAB mapping */
+    unsigned long nameLen;
 } CABFILE;
 
 typedef struct tagCAB
 {
     unsigned char *data;
     long dataLen;
+    int mapped;                /* data is a mapping of hFile, not heap memory */
+    HANDLE hFile;
+    HANDLE hMap;
     unsigned long cbCabinet;   /* cfhead.cbCabinet: excludes trailing data */
     unsigned long coffFiles;
     unsigned short cFolders;
@@ -352,15 +356,82 @@ static unsigned long Rd32(const unsigned char *p)
 
 static void CabFree(CAB *cab)
 {
-    if (cab->data) free(cab->data);
+    if (cab->data)
+    {
+        if (cab->mapped)
+            UnmapViewOfFile(cab->data);
+        else
+            free(cab->data);
+    }
+    if (cab->hMap)
+        CloseHandle(cab->hMap);
+    if (cab->hFile)
+        CloseHandle(cab->hFile);
     if (cab->folders) free(cab->folders);
     if (cab->files) free(cab->files);
     memset(cab, 0, sizeof(*cab));
 }
 
+/* Map the cabinet read-only.  Windows 10/11 LCU payloads keep several
+ * 200-900 MB folders inside one cabinet each; copying the whole file into
+ * the heap and then allocating the decoded folder as well does not fit in a
+ * 32-bit process, so the cabinet image stays file-backed. */
+static int CabMapFile(CAB *cab, const char *path, long *outSize)
+{
+    HANDLE h;
+    HANDLE m;
+    unsigned char *view;
+    DWORD size;
+
+    h = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                    NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE)
+        return 0;
+    size = GetFileSize(h, NULL);
+    if (size == 0xFFFFFFFFUL || size < 36)
+    {
+        CloseHandle(h);
+        return 0;
+    }
+    m = CreateFileMappingA(h, NULL, PAGE_READONLY, 0, 0, NULL);
+    if (!m)
+    {
+        CloseHandle(h);
+        return 0;
+    }
+    view = (unsigned char *)MapViewOfFile(m, FILE_MAP_READ, 0, 0, 0);
+    if (!view)
+    {
+        CloseHandle(m);
+        CloseHandle(h);
+        return 0;
+    }
+    cab->data = view;
+    cab->mapped = 1;
+    cab->hFile = h;
+    cab->hMap = m;
+    *outSize = (long)size;
+    return 1;
+}
+
+/* A large CAB folder can take seconds to decode and callers extract many
+ * files from the same folder, so keep the most recently decoded one. */
+static char g_folderCachePath[MAX_PATH];
+static int g_folderCacheIndex = -1;
+static unsigned char *g_folderCacheData;
+static unsigned long g_folderCacheLen;
+
+static void CabDropFolderCache(void)
+{
+    free(g_folderCacheData);
+    g_folderCacheData = NULL;
+    g_folderCacheLen = 0;
+    g_folderCacheIndex = -1;
+    g_folderCachePath[0] = 0;
+}
+
 static int CabOpen(CAB *cab, const char *path)
 {
-    HFILE fd;
     long size;
     unsigned long off;
     unsigned short reserveBytes = 0;
@@ -369,29 +440,13 @@ static int CabOpen(CAB *cab, const char *path)
     int i, n;
 
     memset(cab, 0, sizeof(*cab));
-    fd = _lopen(path, OF_READ);
-    if (fd == -1)
+    /* Keep at most one decoded folder image alive.  Two of these can be
+     * several hundred MB each and cannot coexist with the next cabinet's
+     * mapping in a 32-bit process. */
+    if (g_folderCacheData && strcmp(path, g_folderCachePath) != 0)
+        CabDropFolderCache();
+    if (!CabMapFile(cab, path, &size))
         return 0;
-    size = _llseek(fd, 0L, SEEK_END);
-    _llseek(fd, 0L, SEEK_SET);
-    if (size < 36)
-    {
-        _lclose(fd);
-        return 0;
-    }
-    cab->data = (unsigned char *)malloc((size_t)size);
-    if (!cab->data)
-    {
-        _lclose(fd);
-        return 0;
-    }
-    if (_lread(fd, (LPSTR)cab->data, (UINT)size) != (UINT)size)
-    {
-        _lclose(fd);
-        CabFree(cab);
-        return 0;
-    }
-    _lclose(fd);
     cab->dataLen = size;
 
     if (memcmp(cab->data, "MSCF", 4) != 0)
@@ -473,11 +528,16 @@ static int CabOpen(CAB *cab, const char *path)
                    (unsigned long)cab->dataLen &&
                    p[nameOff + nameLen] != 0)
                 ++nameLen;
-            n = nameLen;
-            if (n >= (int)sizeof(cab->files[i].name))
-                n = (int)sizeof(cab->files[i].name) - 1;
-            memcpy(cab->files[i].name, p + nameOff, (size_t)n);
-            cab->files[i].name[n] = 0;
+            if (foff + (unsigned long)nameOff + (unsigned long)nameLen >=
+                (unsigned long)cab->dataLen)
+            {
+                CabFree(cab);       /* unterminated name */
+                return 0;
+            }
+            /* The name already lives in the mapped CAB; keep a pointer so a
+             * 65,000-entry payload does not need megabytes of copied names. */
+            cab->files[i].name = (const char *)(p + nameOff);
+            cab->files[i].nameLen = (unsigned long)nameLen;
             foff += (unsigned long)nameOff + (unsigned long)nameLen + 1;
         }
     }
@@ -692,11 +752,6 @@ int CabList(const char *path)
 
 /* A large CAB folder can take seconds to decode and callers extract many
  * files from the same folder, so keep the most recently decoded one. */
-static char g_folderCachePath[MAX_PATH];
-static int g_folderCacheIndex = -1;
-static unsigned char *g_folderCacheData;
-static unsigned long g_folderCacheLen;
-
 static int CabCachedFolder(CAB *cab, const char *cabPath, int folderIndex,
                            unsigned char **out, unsigned long *len)
 {
@@ -707,15 +762,182 @@ static int CabCachedFolder(CAB *cab, const char *cabPath, int folderIndex,
         *len = g_folderCacheLen;
         return 1;
     }
+    CabDropFolderCache();
     if (CabDecompressFolder(cab, folderIndex, out, len) != 1)
         return 0;
-    free(g_folderCacheData);
     g_folderCacheData = *out;
     g_folderCacheLen = *len;
     g_folderCacheIndex = folderIndex;
     strncpy(g_folderCachePath, cabPath, sizeof(g_folderCachePath) - 1);
     g_folderCachePath[sizeof(g_folderCachePath) - 1] = 0;
     return 1;
+}
+
+/* Write entry `index` of a cabinet (by position, not by name, so payload
+ * cabinets that carry the same file name more than once extract completely). */
+int CabExtractIndex(const char *cabPath, int index, const char *targetPath)
+{
+    CAB cab;
+    int result = 1;
+
+    if (!CabOpen(&cab, cabPath))
+        return -1;
+    if (index < 0 || index >= (int)cab.cFiles)
+    {
+        CabFree(&cab);
+        return -1;
+    }
+    if (cab.files[index].iFolder == 0xFFFF)
+    {
+        CabFree(&cab);
+        return -1;
+    }
+    else
+    {
+        unsigned char *folderData;
+        unsigned long folderSize;
+        int fr = CabCachedFolder(&cab, cabPath, cab.files[index].iFolder,
+                                 &folderData, &folderSize);
+        if (fr != 1)
+            result = (fr == -1) ? -8 : -1;
+        else if (cab.files[index].uoffFolderStart + cab.files[index].cbFile >
+                 folderSize)
+            result = -3;
+        else
+        {
+            char longTo[4096];
+            MakeLongPath(targetPath, longTo, sizeof(longTo));
+            {
+                HANDLE h = CreateFileA(longTo, GENERIC_WRITE, 0, NULL,
+                                       CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL,
+                                       NULL);
+                if (h == INVALID_HANDLE_VALUE)
+                    result = -2;
+                else
+                {
+                    DWORD written = 0;
+                    if (!cab.files[index].cbFile ||
+                        (WriteFile(h, folderData + cab.files[index].uoffFolderStart,
+                                   cab.files[index].cbFile, &written, NULL) &&
+                         written == cab.files[index].cbFile))
+                        result = 1;
+                    else
+                        result = -4;
+                    CloseHandle(h);
+                }
+            }
+        }
+    }
+    CabFree(&cab);
+    return result;
+}
+
+/* Bytes needed by a caller-supplied compact name table for CabExtractAll. */
+long CabNamesBytes(const char *cabPath)
+{
+    CAB cab;
+    long total = 0;
+    int i;
+
+    if (!CabOpen(&cab, cabPath))
+        return -1;
+    for (i = 0; i < (int)cab.cFiles; ++i)
+        total += (long)cab.files[i].nameLen + 1;
+    CabFree(&cab);
+    return total;
+}
+
+/* Extract every entry of a cabinet in a single pass: callers used to open and
+ * map the same CAB twice per entry, which for a 65,000-file payload cabinet
+ * meant thousands of file-map cycles and quadratic directory parsing.  Names
+ * go into a compact table (offsets[i]) to keep memory use proportional to the
+ * actual name lengths. */
+int CabExtractAll(const char *cabPath, const char *dir,
+                  char *namesBuf, long namesCap, int *offsets,
+                  int *status, int maxEntries)
+{
+    CAB cab;
+    int i;
+    int total;
+    long used = 0;
+
+    if (!CabOpen(&cab, cabPath))
+        return -1;
+    total = (int)cab.cFiles;
+    if (total > maxEntries)
+        total = maxEntries;
+    for (i = 0; i < total; ++i)
+    {
+        char to[4096];
+        char longTo[4096];
+        unsigned long nameLen = cab.files[i].nameLen;
+        int r = 0;
+
+        offsets[i] = (int)used;
+        if (used + (long)nameLen + 1 > namesCap)
+            nameLen = 0;
+        if (nameLen)
+            memcpy(namesBuf + used, cab.files[i].name, (size_t)nameLen);
+        namesBuf[used + nameLen] = 0;
+        used += (long)nameLen + 1;
+        status[i] = 0;
+        JoinPath(to, sizeof(to), dir, namesBuf + offsets[i]);
+        EnsureParentDir(to);
+        if (cab.files[i].iFolder != 0xFFFF)
+        {
+            unsigned char *folderData;
+            unsigned long folderSize;
+            int fr = CabCachedFolder(&cab, cabPath, cab.files[i].iFolder,
+                                     &folderData, &folderSize);
+            if (fr == 1 &&
+                cab.files[i].uoffFolderStart + cab.files[i].cbFile <= folderSize)
+            {
+                MakeLongPath(to, longTo, sizeof(longTo));
+                {
+                    HANDLE h = CreateFileA(longTo, GENERIC_WRITE, 0, NULL,
+                                           CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL,
+                                           NULL);
+                    if (h != INVALID_HANDLE_VALUE)
+                    {
+                        DWORD written = 0;
+                        if (!cab.files[i].cbFile ||
+                            (WriteFile(h, folderData + cab.files[i].uoffFolderStart,
+                                       cab.files[i].cbFile, &written, NULL) &&
+                             written == cab.files[i].cbFile))
+                            r = 1;
+                        CloseHandle(h);
+                    }
+                }
+            }
+            else if (fr == -1)
+                r = -1;             /* unsupported compression scheme */
+        }
+        status[i] = r;
+    }
+    CabFree(&cab);
+    return total;
+}
+
+/* Find an entry by its file name with a single cabinet directory scan. */
+int CabFindEntry(const char *cabPath, const char *name, char *buf, size_t bufSize)
+{
+    CAB cab;
+    int i;
+    int ok = 0;
+
+    if (!CabOpen(&cab, cabPath))
+        return 0;
+    for (i = 0; i < (int)cab.cFiles; ++i)
+    {
+        if (_stricmp(OnlyFileName(cab.files[i].name), OnlyFileName(name)) != 0)
+            continue;
+        strncpy(buf, cab.files[i].name, bufSize - 1);
+        buf[bufSize - 1] = 0;
+        ok = 1;
+        break;
+    }
+    CabFree(&cab);
+    return ok;
 }
 
 int CabExtractOne(const char *cabPath, const char *entryName,

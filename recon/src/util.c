@@ -137,27 +137,60 @@ void JoinPath(char *dest, size_t destSize, const char *dir, const char *name)
     dest[pos] = 0;
 }
 
+/* Windows ANSI paths stop at MAX_PATH unless prefixed with \\?\.  Deep MSU
+ * payload trees exceed that easily, so build the prefixed absolute form. */
+void MakeLongPath(const char *path, char *buf, size_t bufSize)
+{
+    char cwd[MAX_PATH];
+    size_t n;
+
+    if (bufSize == 0)
+        return;
+    buf[0] = 0;
+    if (!path)
+        return;
+    if (strncmp(path, "\\\\?\\", 4) == 0)
+    {
+        strncpy(buf, path, bufSize - 1);
+        buf[bufSize - 1] = 0;
+        return;
+    }
+    if (path[0] == '\\' && path[1] == '\\')
+    {
+        _snprintf(buf, bufSize - 1, "\\\\?\\UNC\\%s", path + 2);
+        buf[bufSize - 1] = 0;
+        return;
+    }
+    if (path[0] && path[1] == ':')
+    {
+        _snprintf(buf, bufSize - 1, "\\\\?\\%s", path);
+        buf[bufSize - 1] = 0;
+        return;
+    }
+    GetCurrentDirectoryA(sizeof(cwd), cwd);
+    n = strlen(cwd);
+    if (n > 0 && (cwd[n - 1] == '\\' || cwd[n - 1] == '/'))
+        _snprintf(buf, bufSize - 1, "\\\\?\\%s%s", cwd, path);
+    else
+        _snprintf(buf, bufSize - 1, "\\\\?\\%s\\%s", cwd, path);
+    buf[bufSize - 1] = 0;
+}
+
 void EnsureParentDir(const char *path)
 {
-    char buf[MAX_PATH];
+    char buf[4096];
     char *p;
     char *start;
     char save;
-    size_t n;
 
     if (!path)
         return;
-    n = strlen(path);
-    if (n >= sizeof(buf))
-        n = sizeof(buf) - 1;
-    memcpy(buf, path, n);
-    buf[n] = 0;
-
+    MakeLongPath(path, buf, sizeof(buf));
     start = buf;
-    if (buf[0] == '\\' && buf[1] == '\\')
-        start = buf + 2;
-    else if (buf[1] == ':')
-        start = buf + 2;
+    if (strncmp(buf, "\\\\?\\UNC\\", 8) == 0)
+        start = buf + 8;
+    else if (strncmp(buf, "\\\\?\\", 4) == 0)
+        start = buf + 4;
 
     for (p = start; *p; ++p)
     {

@@ -143,6 +143,13 @@ int  CabIsPsf(const char *path);
 int  CabList(const char *path);
 int  CabExtractOne(const char *cabPath, const char *entryName,
                    const char *targetPath);
+int  CabExtractIndex(const char *cabPath, int index, const char *targetPath);
+int  CabExtractAll(const char *cabPath, const char *dir,
+                   char *namesBuf, long namesCap, int *offsets,
+                   int *status, int maxEntries);
+long CabNamesBytes(const char *cabPath);
+int  CabFindEntry(const char *cabPath, const char *name, char *buf,
+                  size_t bufSize);
 int  CabGetEntryCount(const char *path);
 int  CabGetEntryName(const char *path, int index, char *buf, size_t bufSize);
 
@@ -156,5 +163,6 @@ void JoinPath(char *dest, size_t destSize, const char *dir, const char *name);
 char *DirNameOf(const char *path, char *buf, size_t bufSize);
 char *OnlyFileName(const char *path);
 void EnsureParentDir(const char *path);
+void MakeLongPath(const char *path, char *buf, size_t bufSize);
 
 #endif /* EXPAND_H */

@@ -1971,3 +1971,68 @@ Phase D is the genuine open-ended piece.
     verified 8/8 against the DLL, but the address-rewrite formula
     (`SetAddress` value) is not yet matched; that is where the remaining
     .text differences live.
+
+
+### KB5136493 (arm64 LCU + SSU) nested payload expansion
+
+    The Windows 10 LCU MSU `windows10.0-kb5136493-arm64` nests deeper than
+    the earlier packages:
+
+      .msu
+        |- Windows10.0-KB5136493-arm64.cab  (884 MB combined CAB)
+        |    |- SSU-19041.7838-arm64.cab
+        |    |- toc.xml                     -> lists both packages
+        |    |- Windows10.0-KB5136493-arm64.cab (868 MB payload CAB)
+        |    |    |- cabinet.cablist.ini    -> Cab_1_for_KB5136493.cab
+        |    |    |                             Cab_2_for_KB5136493.cab
+        |    |    |- update.mum / update.cat
+        |- SSU-19041.7838-arm64.cab
+        |- WSUSSCAN.cab / *_uup.xml / *-pkgProperties.txt
+
+    Four independent defects kept the payload from being expanded:
+
+      1. CabOpen copied the whole CAB into the heap while CabCachedFolder kept
+         the previous decoded folder alive.  The 900 MB MSU folder plus the
+         884 MB combined CAB plus its 868 MB decoded folder cannot coexist in
+         a 32-bit process, so nested extraction failed and a system
+         expand.exe fallback masked it.  The CAB image is now a read-only
+         file mapping, and the folder cache is released before a different
+         cabinet is opened or folder is decoded.
+
+      2. DpxNestedCab only expanded one level, so the payload CAB named by
+         `cabinet.cablist.ini` was never reached.  The walk now follows the
+         package descriptors (`toc.xml`, `cabinet.cablist.ini`) instead of
+         blindly recursing into every embedded CAB: payload cabinets
+         legitimately ship `.cab` data files (constraintindex.cab, ...) that
+         must be left alone.  A CIX manifest on the input CAB itself is now
+         applied as well.
+
+      3. Extraction used one open/map/close of the CAB per entry, which for
+         Cab_1 (65256 entries) produced thousands of file-map cycles.  CAB
+         extraction is now a single pass (CabExtractAll), and the CIX
+         manifest lookup is a single directory scan (CabFindEntry).
+
+      4. Paths in the payload CAB exceed MAX_PATH (`...\n\cbs\...` under a
+         deep output tree) and 6824 entry names exceed 260 bytes.  Long paths
+         now use the `\\?\` form with widened path buffers.  CAB entry names
+         are pointers into the read-only mapping and the extracted name table
+         is sized by the real name lengths -- fixed 4096-byte arrays for
+         65256 entries cost over half a gigabyte and reintroduced the OS
+         fallback.  DpxExpandFile and CixApplyCab also use wide/long paths;
+         without that, long-named NDP481 payloads were written under
+         truncated names and broke CIX basis chains (2731/2732 verification).
+
+    Validation: both payload CABs expand natively at 65256/65256 and match
+    a clean system expand.exe expansion exactly (no missing/extra files,
+    identical sizes and MD5 for all 130512 files).  The SSU cab patches and
+    verifies 228/228; the full MSU run is free of OS fallbacks.  Other
+    packages keep their baselines: KB2959977 513/513, KB5131083 209/209,
+    NDP481 arm64 2124/2124 and x64 2732/2732, IA64 3112/3279 (up from 3060 patch / 2237
+    verify), ARM32 KB5022508 141/141 and KB5022513 161/161 (both up from
+    107/141 and 113/161 verify).
+
+    The reported "70 of 228" SSU patch/verify failures are **not** a new
+    defect: `PA30_NO_OS=1` reproduces exactly 70/228 because the native PA30
+    decoder cannot handle these real explicit-length deltas.  With the
+    default msdelta.dll delegation the same cab patches and verifies
+    228 of 228.
