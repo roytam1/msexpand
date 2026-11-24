@@ -2223,3 +2223,14 @@ Phase D is the genuine open-ended piece.
     reproduces it.  This contradiction suggests the hooked CLI metadata
     belongs to a different side/stage, or the DLL sources another table for
     that Sum.  No code change kept; the verified baselines remain intact.
+
+
+    **CLI4 input hook (part 82).**  Hooking
+    `CompressionRiftTableFromCli4MapComponent::InternalProcess` at its two
+    IsEmpty calls shows the DLL sees both source and target CLI metadata as
+    non-empty for `smdiagnostics.dll` (source root 0x12c40 / tablesLen 52832,
+    target root 0x2488 / tablesLen 10476).  This confirms our source rejection
+    is the divergence.  Attempts to defer the rejection based on CLI-map
+    presence still do not reproduce the DLL's rift: the resulting table grows
+    to thousands of entries instead of ~520.  No code change kept; the
+    verified baselines remain intact.
