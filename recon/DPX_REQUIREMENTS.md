@@ -2245,3 +2245,12 @@ Phase D is the genuine open-ended piece.
     porting the target PE container's embedded CLI4 metadata construction,
     not just `CliMetadata::Init`.  No code change kept; all verified baselines
     remain intact.
+
+
+    **CLI4 stride / validation experiment (part 84).**  Live hooks show the
+    CLI4 metadata's row strides match ours for 63 of 64 tables (table 42 is 8
+    in CLI4 vs 10 in ordinary CLI).  Applying the CLI4 stride table together
+    with removing the #~ rejection still leaves 4 wrong output bytes on the
+    smdiagnostics delta, and lowers package verification (110->108).
+    Gating the rejection only on CLI4 flag bits 21/22 does not protect NDP481
+    (2124->2112), since those deltas also carry those bits.  No code kept.
