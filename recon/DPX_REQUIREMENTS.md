@@ -1944,3 +1944,18 @@ Phase D is the genuine open-ended piece.
     seed transforms, nor E8 post-processing account for the difference; it
     is in the core symbol/MATCH decode of compo_decompress for this delta
     format.  No changes were committed from this investigation.
+
+    **Symbol stream verified (part 70, continued).**  Hooked the DLL's
+    DecompressComponent::InternalProcess at RVA 0x463BA (right after
+    CompressionFormat::ReadSymbol) on the code=4 delta and compared the first
+    30 symbols with our compo_decompress trace: identical values and lengths
+    (344064/60, 232/1, 344064/67, 131/1, ..., 344091/5, 168/1, 4/1).  So
+    Huffman/symbol decoding is correct; the divergence is in the MATCH copy
+    that follows each symbol.  The DLL's RIFT branch (v66==0x54000) scans the
+    OffsetRiftTable by `entry.left - 1 < pos`, copies in chunks bounded by the
+    next entry's left, and updates the distance-history slots with the
+    negated rift; its plain-distance branches use `val-172032-rift` for
+    v66<0x54000 and history slots / `val-344067` for v66>=0x54000.  Our code
+    implements the same formulas, so the remaining difference is in a subtle
+    detail of that copy loop (chunk boundaries or the history-update order).
+    No changes committed from this step.
