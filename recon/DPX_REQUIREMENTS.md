@@ -2211,3 +2211,15 @@ Phase D is the genuine open-ended piece.
     was kept.  The remaining work is to reproduce the DLL's exact per-table
     `#~` validation (InitDependent's `remaining/stride >= rows`, error
     0x4120A) instead of our aggregate size check.
+
+
+    **CLI validation runtime compare (part 81).**  Hooked the DLL's
+    `CliMetadata::InitDependent` validation loop.  Its 64 row counts and
+    strides match ours exactly for the `smdiagnostics.dll` basis.  The
+    metadata has tablesLen=52832 and sum(stride*row)=52858, while the DLL's
+    validation starts with consumed=24 and adds 4 for each present heap-size
+    entry.  That still appears to reject this stream, yet the composition
+    hooks show a 535-entry CLI Sum stage and lifting our rejection nearly
+    reproduces it.  This contradiction suggests the hooked CLI metadata
+    belongs to a different side/stage, or the DLL sources another table for
+    that Sum.  No code change kept; the verified baselines remain intact.
