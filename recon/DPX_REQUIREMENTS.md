@@ -2115,3 +2115,20 @@ Phase D is the genuine open-ended piece.
     words that the DLL leaves alone.  Hooks show the DLL does receive the
     corresponding function ranges and has matching hint bytes, so the last
     discrepancy is in the rift/state handling of those specific pairs.
+
+
+    **KB5022508 arm-NDP48 (part 75).**  With the default msdelta.dll
+    delegation this package is now fully clean: 141/141 patching and
+    141/141 verification (the old log showed 139/141 and 107/141); the
+    CAB/long-path work in part 71 fixed it.
+
+    With `PA30_NO_OS=1` the baseline is still 139/141 patching and
+    107/141 verification.  The two outright failures are MSIL deltas;
+    e.g. `smdiagnostics.dll` (blob 32, basis `system.servicemodel.internals.dll`)
+    fails in `compo_decompress` at pos 12014 with symval 208075.  Our plain
+    distance uses `right - left` from the rift entry (left 248680, right 0),
+    yielding dist 284723 > pos+srcLen; the DLL uses the raw `right` field
+    (dist 36043) and produces byte-exact output.  Using `right` for every
+    plain-distance symbol fixes this delta but regresses KB2959977
+    (334/513) and crashes NDP481-arm64, so it was backed out; a conditional
+    rule based on the combined-space entry shape did not reproduce the fix.
