@@ -2152,3 +2152,17 @@ Phase D is the genuine open-ended piece.
     wholesale regresses the deltas that currently work.  Reconstructing the
     DLL's full rift-table composition (the 60+ entry table) is the remaining
     piece for native PA30 parity.
+
+
+    **Rift-table experiments (part 77).**  The DLL's OffsetRiftTable was
+    dumped from a live hook: it is a raw signed-offset table with entries
+    `(0, -outLen)`, `(srcLen, -srcLen)`, `(srcLen+9580, -181144)`, ... 60+
+    entries for the `smdiagnostics.dll` delta.  Our synthesised ORIFT has
+    only 5 entries with mapped-RVA `right` values.
+
+    Experiments: (a) our ORIFT + raw `right` for all match branches decodes
+    the smdiagnostics delta byte-exactly, but regresses KB2959977 native
+    (334/513) and crashes NDP481-arm64; (b) the dumped DLL table + raw
+    `right` decodes without error but leaves 16932 wrong output bytes, so
+    the table and formula must be changed together, not independently.
+    No code change was kept; the verified baselines remain intact.
