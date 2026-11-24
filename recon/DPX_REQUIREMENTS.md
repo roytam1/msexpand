@@ -2132,3 +2132,23 @@ Phase D is the genuine open-ended piece.
     plain-distance symbol fixes this delta but regresses KB2959977
     (334/513) and crashes NDP481-arm64, so it was backed out; a conditional
     rule based on the combined-space entry shape did not reproduce the fix.
+
+
+    **Decompressor rift convention (part 76).**  Hooking `InternalProcess`
+    at the plain-distance computation (`msdelta.dll` RVA 0x465AE) shows the
+    DLL computes `dist = symval - 172032 - right`, where `right` is the
+    second DWORD of the rift entry, and uses it *directly*.  Its OffsetRiftTable
+    is a raw signed-offset table: the first entries are
+    `(0, -outLen)`, `(srcLen, -srcLen)`, `(srcLen+9580, -181144)`, ...
+    (60+ entries for the `smdiagnostics.dll` delta).
+
+    Our `compo_decompress` instead receives the synthesised ORIFT
+    `t3 = {srcLen -> 0} * t2r` -- only 5 entries for that delta, with
+    `right` values that are mapped RVAs (0, 512, 53248, ...) rather than
+    signed rifts -- and computes `right - left`.  That is the coordinate
+    mismatch behind the remaining native failures: feeding the DLL's table
+    shape plus the raw `right` fixes the delta byte-exactly, but our
+    synthesised table cannot be used with that formula, and substituting it
+    wholesale regresses the deltas that currently work.  Reconstructing the
+    DLL's full rift-table composition (the 60+ entry table) is the remaining
+    piece for native PA30 parity.
