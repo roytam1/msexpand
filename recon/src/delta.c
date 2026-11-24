@@ -3263,6 +3263,11 @@ static void pa30_transform_arm64(unsigned char *buf, unsigned long len,
                 }
                 else if (b >= 0 && b < 32 && pa30_arm_writeback(&in))
                     armState[b] = 2;
+                /* The DLL clears the state of a memory operand's destination
+                 * register at the end of the instruction.  An intervening ADD
+                 * that writes the ADRP's register therefore cancels the pair. */
+                if (in.rd >= 0 && in.rd < 32)
+                    armState[in.rd] = 0;
                 /* An unpaired memory operand is not remapped: the DLL's
                  * UpdateMemOpInstruction only re-emits the same target. */
             }
@@ -4036,6 +4041,9 @@ static void pa30_transform_reljmps(unsigned char *buf, unsigned long len,
             if (buf[p] == 0xE9)
             {
                 if (orig[p] != 0xE9) continue;
+                /* E9 that is the disp8 of a short jump is data, not an opcode. */
+                if (p >= 1 && (buf[p - 1] == 0xEB || orig[p - 1] == 0xEB))
+                    continue;
             }
             else if (orig[p] != 0x0F || (orig[p + 1] & 0xF0) != 0x80)
                 continue;

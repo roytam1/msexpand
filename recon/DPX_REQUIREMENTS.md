@@ -2331,3 +2331,27 @@ Phase D is the genuine open-ended piece.
     The new reference trees help with context: `napbat-msdelta/src/pe/`
     documents the shared hint buffer and transform order; `jlevere-msdelta`
     has PA30/PE/CLI code but no ARM64 transform.  Neither closes this gap.
+
+    **Full SSU parity (part 88).**  Reading the raw ARM64 transform loop
+    (`msdelta.dll.c:1003BABE`) found the missing rule: after a memory operand
+    the DLL clears the state of that instruction's destination register.  An
+    intervening `ADD x20,x27,#...` between the ADRP at file offset 0x184954
+    and the ADD at 0x1849B8 therefore makes the DLL drop the pair, which is
+    why its seed keeps both original words.  `pa30_transform_arm64` now clears
+    `armState[in.rd]` at the end of every memory-operand instruction.  This
+    makes blob 11 byte-exact and lifts the SSU CAB from 218/228 to 226/228.
+
+    The two remaining SSU targets were x86 cascades.  Seed dumps for blob 12
+    (`securebootai.dll`) and blob 24 (`bfsvc.dll`) showed the latter is exact
+    with the correct basis, so only blob 12 needed a fix.  Its seed diffs came
+    from an E9 byte that is the disp8 of a preceding short jump (`EB E9`):
+    `pa30_transform_reljmps` treated it as a far-jump opcode.  A narrow guard
+    that skips E9 when the preceding byte is EB (source or current) makes
+    blob 12 byte-exact.  A companion guard for `89 75 E8` was tried and
+    removed: it fixed blob 12 but regressed blob 139 (`wbemcomn.dll`) by 24
+    bytes, so only the EB guard is kept.
+
+    Result: `SSU-19041.7838-arm64.cab` now expands **228/228** natively with
+    `PA30_NO_OS=1`, matching OS delegation.  Regressions stay green:
+    KB5022508 127/141, KB5131083 209/209, NDP481 arm64 2124/2124,
+    KB2959977 513/513.
