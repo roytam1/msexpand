@@ -2305,3 +2305,29 @@ Phase D is the genuine open-ended piece.
 
     Regressions re-verified: NDP481 arm64 2124/2124, KB5131083 209/209,
     KB2959977 513/513.
+
+    **ARM64 register state (part 87).**  The remaining SSU deltas were studied
+    with `SSU-19041.7838-arm64.cab` (Patching 228/228, Verification 218/228).
+    A seed dump for blob 11 (`drvstore.dll`) shows 43 differing bytes at 17
+    instruction sites; at every site the DLL seed equals the original source
+    word.  The DLL's `RiftTransformDisasmARM64::TransformFunction` keeps a
+    per-register state of 1 (ADRP paired), 2 (writeback or ADR result), or 0,
+    and only state 1 maps the memory operand through the rift.  Our pass had
+    only a single `adrpValid` flag.  `pa30_transform_arm64` now tracks states
+    1/2/0 and moves a register to state 2 on writeback or after an ADR.  This
+    is neutral on all tested packages and keeps the DLL state model faithful.
+
+    The 17 sites still differ.  A live hook on
+    `UpdateAdrpMemOpInstructionPair` (RVA 0x3BC37) shows the DLL never calls
+    that routine for the ADRP at RVA 0x185554 (file offset 0x184954), though
+    it calls it for the neighbouring ADRPs at RVAs 0x185544/0x185548/0x1855C8.
+    The DLL's hint bytes at all 17 sites are zero, and its MapRva results for
+    the memory targets match ours.  The remaining difference is therefore
+    in how the DLL decides to pair a given ADRP with the following memory
+    operand, not in the rift, the hint buffer, or the address arithmetic.
+    Resolving it needs the exact `InstructionARM64::Parse` writeback/operand
+    classification for the ADD at file offset 0x1849B8.
+
+    The new reference trees help with context: `napbat-msdelta/src/pe/`
+    documents the shared hint buffer and transform order; `jlevere-msdelta`
+    has PA30/PE/CLI code but no ARM64 transform.  Neither closes this gap.

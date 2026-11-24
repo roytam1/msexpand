@@ -3099,6 +3099,16 @@ static unsigned long pa30_arm_ldridx_set(unsigned long w, long val)
     return (w & 0xFFFFF00FUL) | ((v & 0xF) << 12) | (((v >> 4) & 0x1F) << 21);
 }
 
+/* The DLL's ARM64 disassembler sets a writeback flag when a memory operand
+ * also updates its base register.  That moves the register from state 1 to
+ * state 2, so the next operand of that register does not get the rift map. */
+static int pa30_arm_writeback(const ARMINSN *in)
+{
+    if (in->type == 7) return in->rd == in->rn;
+    return (in->type == 10 || in->type == 11 ||
+            in->type == 14 || in->type == 15);
+}
+
 static void pa30_arm_emulate(const ARMINSN *in, unsigned long pc,
                              __int64 *regs)
 {
@@ -3120,7 +3130,7 @@ static void pa30_transform_arm64(unsigned char *buf, unsigned long len,
     unsigned long pdRva, pdOff, pdSize;
     __int64 regs[32], mregs[32];
     unsigned long adrpInsn[32], adrpPc[32];
-    unsigned char adrpValid[32];
+    unsigned char armState[32];   /* 0 none, 1 paired ADRP, 2 writeback/no-map */
 
     if (!pa30_is_arm64_image(buf, len)) return;
     pe = rd32(buf + 0x3C);
@@ -3141,7 +3151,7 @@ static void pa30_transform_arm64(unsigned char *buf, unsigned long len,
     if (!pdRva || !pdOff || !pdSize || pdOff > len) return;
     memset(regs, 0, sizeof(regs));
     memset(mregs, 0, sizeof(mregs));
-    memset(adrpValid, 0, sizeof(adrpValid));
+    memset(armState, 0, sizeof(armState));
     memset(adrpInsn, 0, sizeof(adrpInsn));
     memset(adrpPc, 0, sizeof(adrpPc));
 
@@ -3154,7 +3164,7 @@ static void pa30_transform_arm64(unsigned char *buf, unsigned long len,
         /* TransformFunction resets all of its state for every function. */
         memset(regs, 0, sizeof(regs));
         memset(mregs, 0, sizeof(mregs));
-        memset(adrpValid, 0, sizeof(adrpValid));
+        memset(armState, 0, sizeof(armState));
         memset(adrpInsn, 0, sizeof(adrpInsn));
         memset(adrpPc, 0, sizeof(adrpPc));
         /* The DLL uses 2-byte units for the unwind function length. */
@@ -3215,7 +3225,7 @@ static void pa30_transform_arm64(unsigned char *buf, unsigned long len,
                       in.type == 16))
             {
                 int b = in.base;
-                if (b >= 0 && b < 32 && adrpValid[b])
+                if (b >= 0 && b < 32 && armState[b] == 1)
                 {
                     unsigned long ai = adrpInsn[b];
                     unsigned long apc = adrpPc[b];
@@ -3249,8 +3259,10 @@ static void pa30_transform_arm64(unsigned char *buf, unsigned long len,
                         in.w = nmw ? nmw : w;
                         in.add = delta;
                     }
-                    adrpValid[b] = 0;
+                    armState[b] = pa30_arm_writeback(&in) ? 2 : 0;
                 }
+                else if (b >= 0 && b < 32 && pa30_arm_writeback(&in))
+                    armState[b] = 2;
                 /* An unpaired memory operand is not remapped: the DLL's
                  * UpdateMemOpInstruction only re-emits the same target. */
             }
@@ -3258,14 +3270,14 @@ static void pa30_transform_arm64(unsigned char *buf, unsigned long len,
             {
                 adrpInsn[in.rd] = p;
                 adrpPc[in.rd] = pc;
-                adrpValid[in.rd] = 1;
+                armState[in.rd] = 1;
             }
             pa30_arm_emulate(&in, pc, regs);
             pa30_arm_emulate(&in, (unsigned long)pa30_map_rva(rt, rn, pc), mregs);
             /* The DLL marks ADR (type 3) results as state 2, so they cannot
              * act as an ADRP page base later. */
             if (in.type == 3 && in.rd >= 0 && in.rd < 32)
-                adrpValid[in.rd] = 0;
+                armState[in.rd] = 2;
         }
     }
 
