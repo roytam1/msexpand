@@ -1959,3 +1959,15 @@ Phase D is the genuine open-ended piece.
     implements the same formulas, so the remaining difference is in a subtle
     detail of that copy loop (chunk boundaries or the history-update order).
     No changes committed from this step.
+
+    **IA64 seed gap quantified (part 70, correction).**  An earlier injection
+    test used a stale/missing seed file and wrongly implicated decompression.
+    Regenerating the DLL's transformed seed (`dllseed5.bin`) and injecting it
+    yields **0 / 1705472** differing bytes -- the decompressor is correct.
+    The real gap is 64862 differing seed bytes (64251 in .text, 578 in .reloc)
+    after all our seed transforms.  Phase snapshots show the reductions:
+    before pointers 244208, after pdata 190694, after relocs 69262, final
+    64862.  The DLL's DisassemblerIa64::Bundle::GetAddressTypes port was
+    verified 8/8 against the DLL, but the address-rewrite formula
+    (`SetAddress` value) is not yet matched; that is where the remaining
+    .text differences live.
