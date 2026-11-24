@@ -2195,3 +2195,19 @@ Phase D is the genuine open-ended piece.
     resulting offsets (built from empty source metadata) do not match the
     DLL's, and the decode still fails.  No code change kept; the verified
     baselines remain intact.
+
+
+    **CLI-map rift source metadata (part 80).**  The DLL's
+    `CompressionRiftTableFromCliMap` only builds rifts when both source and
+    target CLI metadata are non-empty.  For the `smdiagnostics.dll` delta the
+    source basis is a managed assembly with a valid BSJB metadata root, but
+    our `cli_meta_from_pe` rejects its `#~` stream (`need=53002`,
+    `tablesLen=52832`, over by 170) and leaves the source metadata empty, so
+    no CLI rift is emitted.  Removing the rejection produces 526 CLI entries
+    / 520 merged ORIFT (the DLL's stages are 535 / 520), native patching rises
+    to 141/141 and verification to 110/141, and the `smdiagnostics.dll` delta
+    is down to 4 wrong output bytes.  But lifting the rejection (even with a
+    small tolerance) regresses 12 NDP481 targets (2124->2112), so no change
+    was kept.  The remaining work is to reproduce the DLL's exact per-table
+    `#~` validation (InitDependent's `remaining/stride >= rows`, error
+    0x4120A) instead of our aggregate size check.
