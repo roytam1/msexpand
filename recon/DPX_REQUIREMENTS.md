@@ -2036,3 +2036,25 @@ Phase D is the genuine open-ended piece.
     decoder cannot handle these real explicit-length deltas.  With the
     default msdelta.dll delegation the same cab patches and verifies
     228 of 228.
+
+
+    **Native SSU deltas (part 71, in progress).**  With `PA30_NO_OS=1` the
+    SSU CAB originally patched only 70/228 targets.  The first outright
+    failure (blob 2 -> wcp.dll) was a RIFT copy at output position 2711181:
+    our bounds check limited the read to `srcLen + pos + done`, but the DLL's
+    `GetCharsConst` reads from the full source+output buffer, so a RIFT copy
+    may be self-overlapping (distance 9, length 28, all zero bytes).  The
+    byte-wise copy propagates the bytes it just wrote.  Relaxing the check to
+    `srcLen + outLen` makes that delta byte-exact (0/3692352 differences).
+
+    Native SSU patching improved from **70/228 to 218/228**; verification
+    from 70/228 to 104/228.  The residual failures are not decompression:
+    injected DLL seeds make the outputs byte-exact, and diffing our seed
+    against the DLL's shows 104057 differing bytes in ARM64 `.text`.  The
+    DLL's `RiftTransformDisasmARM64` rewrites ADRP/address-operand pairs and
+    PC-relative branches via MapRva; our native seed pipeline has no ARM64
+    disassembly pass at all (the x64/IA64 passes are architecture-gated).
+    A partial ADRP/ADD port was attempted and backed out: it reproduced the
+    DLL at one site but regressed others because the DLL's register
+    emulation and memory-operand selection are not captured by a simple
+    adjacent-pair rewrite.  Real PA30 deltas still default to msdelta.dll.

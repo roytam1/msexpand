@@ -4072,8 +4072,16 @@ static int compo_decompress(BITR *br, const COMPFMT *fmt,
                             pos, len, done, cpos2, curi, riftN, curOff, sp,
                             limit, chunk, br->bitpos);
 
+                    /* The DLL reads through GetCharsConst on the combined
+                     * source+output buffer, which is allocated to the full
+                     * target size.  A RIFT copy may be self-overlapping: the
+                     * source range can extend past the current output
+                     * position, and the byte-wise copy propagates the bytes
+                     * it just wrote.  Limiting the read to the already
+                     * decoded prefix (srcLen + pos + done) rejects those
+                     * legitimate overlapping runs. */
                     if (sp < 0 ||
-                        (unsigned long)(sp + (long)chunk) > srcLen + pos + done)
+                        (unsigned long)(sp + (long)chunk) > srcLen + outLen)
                     {
                         if (getenv("PA30_DEBUG")) fprintf(stderr,
                             "DECOMP riftfail: pos=%lu sp=%ld len=%lu riftOff=%ld bitpos=%lu\n",
