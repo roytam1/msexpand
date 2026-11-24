@@ -2166,3 +2166,16 @@ Phase D is the genuine open-ended piece.
     `right` decodes without error but leaves 16932 wrong output bytes, so
     the table and formula must be changed together, not independently.
     No code change was kept; the verified baselines remain intact.
+
+
+    **Complete rift composition attempt (part 78).**  The DLL's apply-side
+    pipeline (aCodeCopyintInp_2, aFlagsGetbitsIn) composes the decompressor
+    table as `Reduce({sourceSize -> 0} * compressionRiftTable3)` with signed
+    rifts stored in the entry's second DWORD.  I implemented that shape in
+    DeltaApply (fresh drt table + raw-`right` arithmetic) and verified it
+    builds, but it produced 41195 wrong output bytes: our PRE rift parse
+    yields only 4 entries (`RIFT n=4`, `rift1 n=4`, `rift2 n=4`) and the
+    derived DRT has 6, while the DLL's actual table has 60+ entries
+    (hook: `(0,-outLen)`, `(srcLen,-srcLen)`, `(srcLen+9580,-181144)`, ...).
+    So the remaining blocker is the PRE rift parser itself (or an additional
+    table source), not the Multiply/Reduce shape.  No code change kept.
