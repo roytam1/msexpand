@@ -2234,3 +2234,14 @@ Phase D is the genuine open-ended piece.
     presence still do not reproduce the DLL's rift: the resulting table grows
     to thousands of entries instead of ~520.  No code change kept; the
     verified baselines remain intact.
+
+
+    **CLI4 metadata source (part 83).**  `ExtractCli4Metadata` does not parse
+    the source PE's #~ stream.  It copies the CliMetadata object embedded in
+    `PortableExecutableInfoCli4` (PE offset 0x5EF4).  Our native path instead
+    reparses the source PE's metadata and applies the ordinary CLI validation
+    to it.  That is why lifting the rejection produces thousands of rift
+    entries instead of the DLL's ~520.  Reproducing native CLI4 deltas requires
+    porting the target PE container's embedded CLI4 metadata construction,
+    not just `CliMetadata::Init`.  No code change kept; all verified baselines
+    remain intact.
