@@ -1421,6 +1421,8 @@ static const unsigned char g_cliCodedMem[13][22] = {
     { 2, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
 };
 
+static int g_cli4 = 0;   /* current delta is a CLI4 (code=16) delta */
+
 static unsigned cli_popcount64(unsigned __int64 v)
 {
     unsigned n = 0;
@@ -1474,6 +1476,11 @@ static void cli_meta_derive(CLIMETA *m)
         }
         m->stride[t] = s;
     }
+    /* CLI4 metadata uses a narrower schema for table 42 (8 bytes/row
+     * instead of 10); the DLL's Cli4Metadata row strides match the ordinary
+     * schema for the other 63 tables. */
+    if (g_cli4 && m->rows[42])
+        m->stride[42] = 8;
     {
         unsigned v28 = 24 + 4 * cli_popcount64(m->mask);
         for (t = 0; t < 64; ++t)
@@ -1712,7 +1719,11 @@ static void cli_meta_from_pe(CLIMETA *m, const unsigned char *pe,
         need = 24 + 4 * cli_popcount64(m->mask);
         for (t = 0; t < 64; ++t)
             need += m->stride[t] * m->rows[t];
-        if (need > m->tablesLen)
+        /* CLI4 deltas do not use the PE's ordinary CliMetadata validation:
+         * the DLL's Cli4Metadata is built from the delta's INI section and is
+         * non-empty even when this #~ stream looks oversized.  Keep the
+         * metadata so the CLI4 map rift can be built. */
+        if (need > m->tablesLen && !g_cli4)
         {
             memset(m, 0, sizeof(*m));
             m->empty = 1;
@@ -5075,12 +5086,18 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
 
     *out = NULL;
     *outLen = 0;
+    g_cli4 = 0;
     if (deltaLen >= 4 && memcmp(delta, "PA19", 4) == 0)
         return Pa19Apply(delta, deltaLen, source, sourceLen, out, outLen);
     if (Pa30ApplyViaOS(delta, deltaLen, source, sourceLen, out, outLen) == 0)
         return 0;
     if (Pa30ParseHeader(delta, deltaLen, &h) != 0)
         return -1;
+    /* The delta header's `code` is a file-type mnemonic: 16 marks the CLI4
+     * composites used by NDP48 packages.  Only those deltas use the DLL's
+     * Cli4Metadata/CLI4 schema; ordinary CLI deltas must keep the #~ stream
+     * validation and the standard table strides. */
+    g_cli4 = (h.code == 16);
 
     br_init(&br, delta + h.payloadOff, deltaLen - h.payloadOff);
     br.bitpos = 0;   /* continue the header bit reader (already byte-aligned) */

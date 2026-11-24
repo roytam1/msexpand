@@ -2254,3 +2254,23 @@ Phase D is the genuine open-ended piece.
     smdiagnostics delta, and lowers package verification (110->108).
     Gating the rejection only on CLI4 flag bits 21/22 does not protect NDP481
     (2124->2112), since those deltas also carry those bits.  No code kept.
+
+    **CLI4 deltas identified by header `code` (part 85).**  The PA30 header's
+    `code` field is the file-type mnemonic, not only a PE machine hint: a sweep
+    of every blob shows `code=16` is used only by the CLI4 composites in
+    `kb5022508-arm-ndp48` (20 blobs); NDP481 arm64 uses 1/2/8 and none of its
+    842 blobs are 16.  This is the missing discriminator that the part-84
+    flag-bit gate lacked.  `delta.c` now marks `g_cli4 = (h.code == 16)` and,
+    only for those deltas, (a) keeps a source CliMetadata whose `#~` stream
+    fails the ordinary aggregate validation and (b) uses the CLI4 row stride
+    of 8 for table 42.  Both are required: relaxing alone (no stride change)
+    only lifts verification 107->109, while the stride change on top lifts it
+    to **113/141** for the ARM32 NDP48 package, with no target regressing.
+    The remaining 28 failures have six root causes (five deltas on the
+    `system.dll` basis, one on `mscorlib.dll`); e.g. blob 2 still differs in
+    3375 bytes in the target's ARM64 `.text` with the correct basis, so the
+    outstanding work is the CLI4 native-code seed pass, not the CLI map rift.
+
+    Regressions verified with `PA30_NO_OS=1`: NDP481 arm64 (kb5127694)
+    **2124/2124**, KB5131083 **209/209**, KB2959977 **513/513**.  The named
+    ARM64 NDP481 MSU therefore remains fully byte-exact natively.
