@@ -2098,3 +2098,20 @@ Phase D is the genuine open-ended piece.
     ADRP/ADD/LDR words still differ per basis, split between over- and
     under-rewrites; they come from the remaining per-register state nuances
     of `TransformFunction` (states 1/2/0 and the writeback flag).
+
+
+    **ARM64 instruction parsing fix (part 74).**  Reconstructed the DLL's
+    `byte_10051186` emulate-action table (types 10/11/14/15 write back the
+    base register, 12/16 are no-ops) and fixed the memory-operand parser:
+    for LDR/STR forms whose size bits differ, the DLL always takes the base
+    register from instruction bits 9..5, while our parser followed a
+    swapped `Rn` field and used the destination register instead.  Pairing
+    ADRP with the correct base register closes the large majority of the
+    remaining seed differences.
+
+    Native SSU is now **228/228 patching and 218/228 verification** (was
+    174/228).  The first delta is byte-exact; the ten remaining targets
+    differ by only two output bytes each, traced to ~17 ADRP/ADD/LDR seed
+    words that the DLL leaves alone.  Hooks show the DLL does receive the
+    corresponding function ranges and has matching hint bytes, so the last
+    discrepancy is in the rift/state handling of those specific pairs.

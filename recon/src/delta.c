@@ -2967,7 +2967,7 @@ static void pa30_arm_parse(unsigned long w, ARMINSN *in)
             in->rn = (int)(((h & 0xC0) != 0) ? ((w >> 5) & 0x1F) : (w & 0x1F));
             in->memKind = 2;
             in->add = pa30_sx((long)(((w >> 12) & 0xF) | (((w >> 21) & 0x1F) << 4)), 9);
-            in->base = in->rn;
+            in->base = (int)((w >> 5) & 0x1F);
             return;
         }
         if ((h & 0x3F00) == 0x3900 && ((h & 0xC0) == 0x40 || (h & 0xC0) == 0))
@@ -2979,7 +2979,7 @@ static void pa30_arm_parse(unsigned long w, ARMINSN *in)
             in->rn = (int)(((h & 0xC0) != 0) ? ((w >> 5) & 0x1F) : (w & 0x1F));
             in->memKind = 3;
             in->add = imm << sh;
-            in->base = in->rn;
+            in->base = (int)((w >> 5) & 0x1F);
             return;
         }
     }
@@ -3092,7 +3092,10 @@ static void pa30_arm_emulate(const ARMINSN *in, unsigned long pc,
         regs[in->rd] = (__int64)pa30_arm_adr_target(in->w, pc);
     else if (in->type == 7 && in->add >= 0)
         regs[in->rd] = regs[in->rn] + in->add;
-    else if ((in->type == 10 || in->type == 11) && in->add)
+    /* byte_10051186[type-3]: 10,11,14,15 -> write back the base register;
+     * 12,16 -> no register effect. */
+    else if ((in->type == 10 || in->type == 11 ||
+              in->type == 14 || in->type == 15) && in->add)
         regs[in->base] += in->add;
 }
 
@@ -3206,6 +3209,12 @@ static void pa30_transform_arm64(unsigned char *buf, unsigned long len,
                     ARMINSN adr;
                     unsigned long aw, nwadr;
                     memTarget = (long)(regs[b] + in.add);
+                    /* The DLL emulates the (original) memory operand on the
+                     * source register file before mapping the target. */
+                    {
+                        ARMINSN pre = in;
+                        pa30_arm_emulate(&pre, pc, regs);
+                    }
                     v10 = (long)pa30_map_rva(rt, rn, apc);
                     v11 = (long)pa30_map_rva(rt, rn, (unsigned long)memTarget);
                     aw = rd32(buf + ai);
