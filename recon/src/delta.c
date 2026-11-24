@@ -1423,6 +1423,14 @@ static const unsigned char g_cliCodedMem[13][22] = {
 
 static int g_cli4 = 0;   /* current delta is a CLI4 (code=16) delta */
 
+/* The DLL's Cli4Metadata schema (dword_10015DA8) is identical to the ordinary
+ * one except that table 42 has only four columns; the ordinary table has a
+ * trailing coded-index column. */
+static unsigned cli_ncols(unsigned t)
+{
+    return (g_cli4 && t == 42) ? 4U : (unsigned)g_cliNCols[t];
+}
+
 static unsigned cli_popcount64(unsigned __int64 v)
 {
     unsigned n = 0;
@@ -1454,7 +1462,7 @@ static void cli_meta_derive(CLIMETA *m)
     {
         unsigned s = 0;
         if (!m->rows[t]) continue;
-        for (c = 0; c < g_cliNCols[t]; ++c)
+        for (c = 0; c < cli_ncols(t); ++c)
         {
             unsigned ty = g_cliColType[t][c];
             unsigned ix = g_cliColIdx[t][c];
@@ -1476,11 +1484,6 @@ static void cli_meta_derive(CLIMETA *m)
         }
         m->stride[t] = s;
     }
-    /* CLI4 metadata uses a narrower schema for table 42 (8 bytes/row
-     * instead of 10); the DLL's Cli4Metadata row strides match the ordinary
-     * schema for the other 63 tables. */
-    if (g_cli4 && m->rows[42])
-        m->stride[42] = 8;
     {
         unsigned v28 = 24 + 4 * cli_popcount64(m->mask);
         for (t = 0; t < 64; ++t)
@@ -1920,11 +1923,11 @@ static void cli_add_table_full(RIFTBUF *o, const CLIMETA *src,
                            sBase + ((__int64)i - 1) * strideS);
         }
     }
-    for (c = 0; c < g_cliNCols[t]; ++c)
+    for (c = 0; c < cli_ncols(t); ++c)
     {
         unsigned si = src->is4[t][c];
         unsigned ti = tgt->is4[t][c];
-        int last = (g_cliNCols[t] <= c + 1);
+        int last = (cli_ncols(t) <= c + 1);
         __int64 sCol, tCol;
 
         if (si == ti) continue;
@@ -2065,7 +2068,7 @@ static unsigned cli_get_cell(const CLIMETA *m, const unsigned char *buf,
                              unsigned row, unsigned col)
 {
     unsigned long off;
-    if (table >= 64 || col >= g_cliNCols[table] || row == 0 ||
+    if (table >= 64 || col >= cli_ncols(table) || row == 0 ||
         row > m->rows[table])
         return 0;
     off = (unsigned long)m->toff[table] +
@@ -2282,7 +2285,7 @@ typedef struct tagCLIBLOBREF
 
 typedef struct tagCLIBLOBSET
 {
-    CLIBLOBREF a[8192];
+    CLIBLOBREF a[65536];
     unsigned n;
 } CLIBLOBSET;
 
@@ -2291,7 +2294,7 @@ static void cli_blob_collect(CLIBLOBSET *s, unsigned off, unsigned kind)
     unsigned i;
     for (i = 0; i < s->n; ++i)
         if (s->a[i].off == off) return;      /* the DLL keeps the first kind */
-    if (s->n < 8192)
+    if (s->n < 65536)
     {
         s->a[s->n].off = off;
         s->a[s->n].kind = kind;
@@ -2617,7 +2620,7 @@ static void pa30_transform_cli_metadata(unsigned char *buf, unsigned long len,
     {
         unsigned ncols, stride, toff, n;
         if (!src->rows[t]) continue;
-        ncols = g_cliNCols[t];
+        ncols = cli_ncols(t);
         stride = src->stride[t];
         toff = src->toff[t];
         n = src->rows[t];
@@ -2719,7 +2722,7 @@ static int cli_compression_rift(RIFTENTRY **out, unsigned *outn,
             src->rows[t] > 0x100000UL || tgt->rows[t] > 0x100000UL)
             continue;
         same = (src->stride[t] == tgt->stride[t]);
-        for (c = 0; same && c < g_cliNCols[t]; ++c)
+        for (c = 0; same && c < cli_ncols(t); ++c)
             if (src->is4[t][c] != tgt->is4[t][c]) same = 0;
         if (same)
             cli_add_table_sparse(&o, (__int64)src->toff[t],
@@ -5525,7 +5528,7 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
                              * between them. */
                             if (!cliSrc.empty)
                             {
-                                CLIBLOBSET blobs;
+                                static CLIBLOBSET blobs;
                                 memset(&blobs, 0, sizeof(blobs));
                                 if (getenv("PA30_DEBUG")) fprintf(stderr, "SEED cli shared\n");
                                 PHASE("cli-pre-start");
@@ -5617,7 +5620,7 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
                             if (!getenv("PA30_SKIPSRCCLI"))
                             {
                                 CLIMETA nc;
-                                CLIBLOBSET nb;
+                                static CLIBLOBSET nb;
                                 memset(&nc, 0, sizeof(nc));
                                 memset(&nb, 0, sizeof(nb));
                                 cli_meta_from_pe(&nc, source, sourceLen);

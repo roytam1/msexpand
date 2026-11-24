@@ -2266,11 +2266,42 @@ Phase D is the genuine open-ended piece.
     of 8 for table 42.  Both are required: relaxing alone (no stride change)
     only lifts verification 107->109, while the stride change on top lifts it
     to **113/141** for the ARM32 NDP48 package, with no target regressing.
-    The remaining 28 failures have six root causes (five deltas on the
-    `system.dll` basis, one on `mscorlib.dll`); e.g. blob 2 still differs in
-    3375 bytes in the target's ARM64 `.text` with the correct basis, so the
-    outstanding work is the CLI4 native-code seed pass, not the CLI map rift.
+    The remaining 28 failures cascaded from six root causes (five deltas on
+    the `system.dll` basis, one on `mscorlib.dll`); part 86 below fixes the
+    dominant ones, including blob 2 (`system.core`).
 
     Regressions verified with `PA30_NO_OS=1`: NDP481 arm64 (kb5127694)
     **2124/2124**, KB5131083 **209/209**, KB2959977 **513/513**.  The named
     ARM64 NDP481 MSU therefore remains fully byte-exact natively.
+
+    **CLI4 seed transform (part 86).**  Two concrete defects were found by
+    comparing our transformed seed against the DLL's for blob 2 (`system.core`
+    on the `system.dll` basis), captured with `msdelta_seed_any.gdb`:
+
+      1. The DLL's `Cli4Metadata` schema (`dword_10015DA8`, dumped from the
+         live DLL) differs from the ordinary CLI schema in exactly one place:
+         table 42 has four columns, not five.  Our hardcoded stride-8 hack in
+         part 85 was a symptom of this; `cli_ncols()` now drops the trailing
+         coded-index column for CLI4, so strides/cell offsets of tables after
+         42 are correct.  This removed all 1130 `#~` seed-byte differences and
+         cut blob 2's output error from 3375 to 748 bytes.
+      2. `CLIBLOBSET` collected at most 8192 blob references, but blob 2 has
+         15,830 (observed via a `PA30_DEBUG` counter).  Truncation silently
+         skipped signature-blob token remaps.  Raised to 65536 entries (the
+         blob sets are now static to keep them off the stack).  This made
+         blob 2 byte-exact (0/1,551,240) and lifted ARM32 NDP48 native
+         verification from **113/141 to 127/141**.
+
+    Forcing every signature token remap for CLI4 (instead of using the ordinary
+    walker's skip/state rules) regressed blobs 4 and 31 heavily (3->224 and
+    8->411 wrong bytes), so the CLI4 walker shares the ordinary one's quirks.
+
+    The 14 remaining failures reduce to three root causes, each already close:
+    blob 4 (`system.identitymodel`) 3 bytes, blob 31 (`system.servicemodel.
+    internals`) 8 bytes, and blob 11 (`clr.dll`, a non-CLI4 ARM64 delta) 9
+    bytes.  All three have correct bases; the residual CLI4 bytes are a few
+    signature-walker state cases, and blob 11's are single-bit ARM64 operand
+    differences of the kind left open in part 74.
+
+    Regressions re-verified: NDP481 arm64 2124/2124, KB5131083 209/209,
+    KB2959977 513/513.
