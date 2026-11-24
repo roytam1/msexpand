@@ -2058,3 +2058,23 @@ Phase D is the genuine open-ended piece.
     DLL at one site but regressed others because the DLL's register
     emulation and memory-operand selection are not captured by a simple
     adjacent-pair rewrite.  Real PA30 deltas still default to msdelta.dll.
+
+
+    **ARM64 seed transform port (part 72, partial).**  Ported
+    `RiftTransformDisasmARM64` into delta.c: instruction classification
+    (ADR/ADRP, B/BL, B.cond, CBZ/TBZ, ADD-imm, LDR/STR index/offset),
+    dual source/mapped register emulation, ADRP+memory-operand pair
+    rewriting (map the combined address, adjust the ADRP page and the
+    small offset), and .pdata-driven function ranges.  A kill switch
+    `PA30_NO_ARM64PORT` disables it.
+
+    With the port enabled, native SSU verification improves from 104/228
+    to 115/228; KB2959977 stays 513/513 and NDP481-arm64 2124/2124.
+    Exact seed parity is still blocked: the DLL uses an instruction-boundary
+    hint array to decide which instructions to decode, while our PE-derived
+    hint marks every byte of these zero-characteristic MSU images as
+    non-executable.  Without it we both rewrite instructions the DLL skips
+    and miss ones it handles.  PC-relative branch rewriting is therefore
+    disabled in the port (enabling it made the seed worse).  Remaining work:
+    reconstruct the DLL's hint array (its component offset +19 indexed by
+    the code offset) before re-enabling branch rewrites.

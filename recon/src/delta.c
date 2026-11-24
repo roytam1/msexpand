@@ -2894,6 +2894,364 @@ static void pa30_transform_pointers(unsigned char *buf, unsigned long len,
     free(hint);
 }
 
+/* ---- ARM64 seed transform (ported from RiftTransformDisasmARM64) ---- */
+typedef struct tagARMINSN
+{
+    unsigned long w;
+    int type;
+    int rd;
+    int rn;
+    int base;                   /* register used by the memory operand */
+    int memKind;                /* 0 none, 1 add-imm, 2 ldrstr-index, 3 ldrstr-imm12 */
+    long add;                   /* decoded offset for memKind */
+} ARMINSN;
+
+static int pa30_is_arm64_image(const unsigned char *b, unsigned long len)
+{
+    unsigned long pe;
+    if (len < 0x40 || memcmp(b, "MZ", 2)) return 0;
+    pe = rd32(b + 0x3C);
+    if (pe + 24 > len || memcmp(b + pe, "PE\0\0", 4)) return 0;
+    return rd16(b + pe + 4) == 0xAA64;
+}
+
+static long pa30_sx(long v, int bits)
+{
+    if (bits >= 32) return v;
+    if (v & (1L << (bits - 1))) v |= (~0L << bits);
+    return v;
+}
+
+static void pa30_arm_parse(unsigned long w, ARMINSN *in)
+{
+    unsigned long h = (w >> 16) & 0xFFFF;
+    int op = (int)((h >> 8) & 0x1F);
+
+    memset(in, 0, sizeof(*in));
+    in->w = w;
+    in->type = 2;
+    if (op == 17)
+    {
+        in->type = ((h & 0xC0) == 0x80 || (h & 0xC0) == 0xC0) ? 8 : 7;
+        in->rd = (int)(w & 0x1F);
+        in->rn = (int)((w >> 5) & 0x1F);
+        if (in->type == 7)
+        {
+            int sh = (int)((w >> 22) & 3);
+            long imm = (long)((w >> 10) & 0xFFF);
+            if (sh == 1) imm <<= 12;
+            else if (sh != 0) imm = -1;
+            in->memKind = 1;
+            in->add = imm;
+            in->base = in->rn;
+        }
+        return;
+    }
+    if (op == 16)
+    {
+        in->type = (int)((h >> 15) & 1) + 3;   /* 3 = ADR, 4 = ADRP */
+        in->rd = (int)(w & 0x1F);
+        return;
+    }
+    if ((h & 0x7C00) == 0x1400) { in->type = (int)((h >> 15) & 1) + 5; return; }
+    if ((h & 0xFE00) == 0x5400 && !(h & 0x100) && !(w & 0x10)) { in->type = 9; return; }
+    /* LDR/STR with register index (pre/post-indexed) */
+    if ((h >> 14) == 2 || (h >> 14) == 3)
+    {
+        if ((h & 0x3F00) == 0x3800 && ((h & 0xC0) == 0x40 || (h & 0xC0) == 0) &&
+            !(h & 0x20) && ((w & 0xC00) == 0x400 || (w & 0xC00) == 0xC00))
+        {
+            int idx = ((w & 0xC00) == 0x400) ? 1 : 0;
+            in->type = ((h & 0xC0) == 0x40) ? 10 + idx : 14 + idx;
+            in->rd = (int)(((h & 0xC0) == 0x40) ? (w & 0x1F) : ((w >> 5) & 0x1F));
+            in->rn = (int)(((h & 0xC0) != 0) ? ((w >> 5) & 0x1F) : (w & 0x1F));
+            in->memKind = 2;
+            in->add = pa30_sx((long)(((w >> 12) & 0xF) | (((w >> 21) & 0x1F) << 4)), 9);
+            in->base = in->rn;
+            return;
+        }
+        if ((h & 0x3F00) == 0x3900 && ((h & 0xC0) == 0x40 || (h & 0xC0) == 0))
+        {
+            int sh = (int)((w >> 30) & 3);
+            long imm = (long)((((unsigned long)h & 0x3F) << 6) | ((w >> 10) & 0x3F));
+            in->type = ((h & 0xC0) != 0x40) ? 16 : 12;
+            in->rd = (int)(((h & 0xC0) == 0x40) ? (w & 0x1F) : ((w >> 5) & 0x1F));
+            in->rn = (int)(((h & 0xC0) != 0) ? ((w >> 5) & 0x1F) : (w & 0x1F));
+            in->memKind = 3;
+            in->add = imm << sh;
+            in->base = in->rn;
+            return;
+        }
+    }
+    if (h == 0xD65F && ((((unsigned long)w & 0xFF) | ((w >> 10) & 0x1F)) & 0x1F) == 0)
+    { in->type = 13; return; }
+    if ((h & 0x7E00) == 0x3400) { in->type = ((h & 0x100) ? 18 : 17); return; }
+    if ((h & 0xFF80) == 0x3580 && (h & 0x1F) == 31 &&
+        (w & 0xFFFF) < 0x400 && (w & 0x1F) == 0)
+    { in->type = ((h & 0x60) == 0x20) ? 20 : 19; return; }
+    if ((h & 0x7E00) == 0x3600) { in->type = ((h & 0x100) ? 22 : 21); return; }
+}
+
+static long pa30_arm_adr_off(unsigned long w, unsigned long pc)
+{
+    unsigned long imm = ((w >> 29) & 3) | (((w >> 5) & 0x7FFFF) << 2);
+    long off = pa30_sx((long)imm, 21);
+    if ((w >> 31) & 1) return off << 12;
+    return off;
+}
+
+static unsigned long pa30_arm_adr_target(unsigned long w, unsigned long pc)
+{
+    long off = pa30_arm_adr_off(w, pc);
+    if ((w >> 31) & 1) return (pc & 0xFFFFF000UL) + (unsigned long)off;
+    return pc + (unsigned long)off;
+}
+
+static unsigned long pa30_arm_adr_set(unsigned long w, unsigned long pc,
+                                      unsigned long target)
+{
+    long delta;
+    unsigned long imm;
+    if ((w >> 31) & 1) delta = (long)(target - (pc & 0xFFFFF000UL)) >> 12;
+    else                delta = (long)(target - pc);
+    imm = (unsigned long)delta;
+    return (w & 0x9F00001FUL) | ((imm & 3) << 29) | (((imm >> 2) & 0x7FFFF) << 5);
+}
+
+static long pa30_arm_branch_target(const ARMINSN *in, unsigned long pc)
+{
+    unsigned long w = in->w;
+    unsigned long h = (w >> 16) & 0xFFFF;
+    if (in->type == 3 || in->type == 4)
+        return (long)pa30_arm_adr_target(w, pc);
+    if (in->type == 5 || in->type == 6)
+        return (long)(pc + (unsigned long)pa30_sx((long)((w & 0x3FFFFFF) << 2), 28));
+    if (in->type == 9)
+        return (long)(pc + (unsigned long)(pa30_sx((long)(((w >> 5) & 0x7FFFF) << 2), 21)));
+    if (in->type == 17 || in->type == 18)
+        return (long)(pc + (unsigned long)(pa30_sx((long)((w >> 5) & 0x7FFFF), 19) << 2));
+    if (in->type == 19 || in->type == 20 || in->type == 21 || in->type == 22)
+        return (long)(pc + (unsigned long)(pa30_sx((long)((w >> 5) & 0x3FFF), 14) << 2));
+    return 0;
+}
+
+static unsigned long pa30_arm_branch_set(const ARMINSN *in, unsigned long pc,
+                                         unsigned long target)
+{
+    unsigned long w = in->w, nd;
+    long d = (long)(target - pc);
+    if (in->type == 3 || in->type == 4) return pa30_arm_adr_set(w, pc, target);
+    if (in->type == 5 || in->type == 6)
+        return (w & 0xFC000000UL) | (((unsigned long)(d >> 2)) & 0x03FFFFFFUL);
+    nd = ((unsigned long)(d >> 2)) & 0x7FFFFUL;
+    if (in->type == 9 || in->type == 17 || in->type == 18)
+        return (w & 0xFF00001FUL) | (nd << 5);
+    nd = ((unsigned long)(d >> 2)) & 0x3FFFUL;
+    return (w & 0xFF00001FUL) | (nd << 5);
+}
+
+static unsigned long pa30_arm_add_set(unsigned long w, long val)
+{
+    int sh = (int)((w >> 22) & 3);
+    unsigned long imm;
+    if (val < 0) return 0;
+    if (sh == 1)
+    {
+        if (val % 4096) return 0;
+        imm = (unsigned long)(val / 4096);
+    }
+    else if (sh == 0) imm = (unsigned long)val;
+    else return 0;
+    if (imm >= 4096) return 0;
+    return (w & ~0x003FFC00UL) | (imm << 10);
+}
+
+static unsigned long pa30_arm_ldrimm_set(unsigned long w, long val)
+{
+    int sh = (int)((w >> 30) & 3);
+    unsigned long imm;
+    if (val < 0 || (val & ((1L << sh) - 1))) return 0;
+    imm = (unsigned long)(val >> sh);
+    if (imm >= 4096) return 0;
+    return (w & 0xFFC003FFUL) |
+           ((imm & 0x3F) << 10) | (((imm >> 6) & 0x3F) << 16);
+}
+
+static unsigned long pa30_arm_ldridx_set(unsigned long w, long val)
+{
+    unsigned long v = (unsigned long)(val & 0x1FF);
+    return (w & 0xFFFFF00FUL) | ((v & 0xF) << 12) | (((v >> 4) & 0x1F) << 21);
+}
+
+static void pa30_arm_emulate(const ARMINSN *in, unsigned long pc,
+                             __int64 *regs)
+{
+    if (in->type == 3 || in->type == 4)
+        regs[in->rd] = (__int64)pa30_arm_adr_target(in->w, pc);
+    else if (in->type == 7 && in->add >= 0)
+        regs[in->rd] = regs[in->rn] + in->add;
+    else if ((in->type == 10 || in->type == 11) && in->add)
+        regs[in->base] += in->add;
+}
+
+static void pa30_transform_arm64(unsigned char *buf, unsigned long len,
+                                 const RIFTENTRY *rt, unsigned rn)
+{
+    unsigned long pe, opt, sh, n, si, i;
+    unsigned long pdRva, pdOff, pdSize;
+    __int64 regs[32], mregs[32];
+    unsigned long adrpInsn[32], adrpPc[32];
+    unsigned char adrpValid[32];
+
+    if (!pa30_is_arm64_image(buf, len)) return;
+    pe = rd32(buf + 0x3C);
+    opt = pe + 24;
+    sh = opt + rd16(buf + pe + 20);
+    n = rd16(buf + pe + 6);
+    pdRva = pdOff = pdSize = 0;
+    for (si = 0; si < n && sh + 40 <= len; ++si, sh += 40)
+    {
+        if (rd32(buf + sh) == 0x6164702EUL /* ".pda" */ &&
+            rd32(buf + sh + 4) == 0x00006174UL /* "ta" */)
+        {
+            pdRva = rd32(buf + sh + 12);
+            pdSize = rd32(buf + sh + 16);
+            pdOff = rd32(buf + sh + 20);
+        }
+    }
+    if (!pdRva || !pdOff || !pdSize || pdOff > len) return;
+    memset(regs, 0, sizeof(regs));
+    memset(mregs, 0, sizeof(mregs));
+    memset(adrpValid, 0, sizeof(adrpValid));
+    memset(adrpInsn, 0, sizeof(adrpInsn));
+    memset(adrpPc, 0, sizeof(adrpPc));
+
+    for (i = 0; i + 8 <= pdSize && pdOff + i + 8 <= len; i += 8)
+    {
+        unsigned long begin = rd32(buf + pdOff + i);
+        unsigned long unwind = rd32(buf + pdOff + i + 4);
+        unsigned long flen, start, limit, p, pc;
+        if (!begin || !unwind) continue;
+        if (unwind & 3) flen = 4UL * (((unwind >> 2) & 0x7FF) + 1);
+        else
+        {
+            unsigned long uo = 0xFFFFFFFFUL, t, k;
+            for (k = 0; k < n; ++k)
+            {
+                unsigned long q = opt + rd16(buf + pe + 20) + 40 * k;
+                unsigned long va = rd32(buf + q + 12);
+                unsigned long vs = rd32(buf + q + 8);
+                unsigned long ra = rd32(buf + q + 20);
+                if (q + 40 <= len && va <= unwind && unwind < va + vs)
+                { uo = ra + (unwind - va); break; }
+            }
+            if (uo == 0xFFFFFFFFUL || uo + 4 > len) continue;
+            flen = 4UL * (rd32(buf + uo) & 0x3FFFF);
+        }
+        if (!flen || flen > len) continue;
+        start = 0xFFFFFFFFUL;
+        {
+            unsigned long k, q = opt + rd16(buf + pe + 20);
+            for (k = 0; k < n && q + 40 <= len; ++k, q += 40)
+            {
+                unsigned long va = rd32(buf + q + 12);
+                unsigned long vs = rd32(buf + q + 8);
+                unsigned long ra = rd32(buf + q + 20);
+                if (va <= begin && begin < va + vs)
+                { start = ra + (begin - va); break; }
+            }
+        }
+        if (start == 0xFFFFFFFFUL || start >= len) continue;
+        limit = start + flen;
+        if (limit > len) limit = len;
+        for (p = start; p + 4 <= limit; p += 4)
+        {
+            ARMINSN in;
+            unsigned long w, nw = 0;
+            pc = begin + (p - start);
+            w = rd32(buf + p);
+            pa30_arm_parse(w, &in);
+            if (0 && (in.type == 3 || in.type == 4 || in.type == 5 || in.type == 6 ||
+                in.type == 9 || in.type == 17 || in.type == 18 ||
+                in.type == 19 || in.type == 20 || in.type == 21 || in.type == 22))
+            {
+                long tgt = pa30_arm_branch_target(&in, pc);
+                long mt = (long)pa30_map_rva(rt, rn, (unsigned long)tgt);
+                long mp = (long)pa30_map_rva(rt, rn, pc);
+                unsigned long nt = (unsigned long)(mt - mp + (long)pc);
+                nw = pa30_arm_branch_set(&in, pc, nt);
+                if (nw != w) pa30_set_u32(buf, p, nw);
+            }
+            else if (in.memKind &&
+                     (in.type == 7 || in.type == 10 || in.type == 11 ||
+                      in.type == 12 || in.type == 14 || in.type == 15 ||
+                      in.type == 16))
+            {
+                int b = in.base;
+                if (b >= 0 && b < 32 && adrpValid[b])
+                {
+                    unsigned long ai = adrpInsn[b];
+                    unsigned long apc = adrpPc[b];
+                    long memTarget, v10, v11;
+                    ARMINSN adr;
+                    unsigned long aw, nwadr;
+                    memTarget = (long)(regs[b] + in.add);
+                    v10 = (long)pa30_map_rva(rt, rn, apc);
+                    v11 = (long)pa30_map_rva(rt, rn, (unsigned long)memTarget);
+                    aw = rd32(buf + ai);
+                    pa30_arm_parse(aw, &adr);
+                    nwadr = pa30_arm_adr_set(aw,
+                        (unsigned long)v10, (unsigned long)v11);
+                    if (nwadr != aw) pa30_set_u32(buf, ai, nwadr);
+                    adr.w = nwadr;
+                    mregs[adr.rd] = (__int64)pa30_arm_adr_target(nwadr,
+                                                        (unsigned long)v10);
+                    {
+                        long delta = v11 - (long)mregs[b];
+                        unsigned long nmw = 0;
+                        if (in.memKind == 1) nmw = pa30_arm_add_set(w, delta);
+                        else if (in.memKind == 2) nmw = pa30_arm_ldridx_set(w, delta);
+                        else if (in.memKind == 3) nmw = pa30_arm_ldrimm_set(w, delta);
+                        if (nmw && nmw != w) pa30_set_u32(buf, p, nmw);
+                        in.w = nmw ? nmw : w;
+                        in.add = delta;
+                    }
+                    adrpValid[b] = 0;
+                }
+                else if (b >= 0 && b < 32 && in.add)
+                {
+                    /* Standalone memory operand: map the referenced address. */
+                    long memTarget = (long)(regs[b] + in.add);
+                    long mapped = (long)pa30_map_rva(rt, rn, (unsigned long)memTarget);
+                    long delta = mapped - (long)regs[b];
+                    unsigned long nmw = 0;
+                    if (in.memKind == 1) nmw = pa30_arm_add_set(w, delta);
+                    else if (in.memKind == 2) nmw = pa30_arm_ldridx_set(w, delta);
+                    else if (in.memKind == 3) nmw = pa30_arm_ldrimm_set(w, delta);
+                    if (nmw && nmw != w)
+                    {
+                        pa30_set_u32(buf, p, nmw);
+                        in.w = nmw;
+                        in.add = delta;
+                    }
+                }
+            }
+            if (in.type == 4 && in.rd >= 0 && in.rd < 32)
+            {
+                adrpInsn[in.rd] = p;
+                adrpPc[in.rd] = pc;
+                adrpValid[in.rd] = 1;
+            }
+            pa30_arm_emulate(&in, pc, regs);
+            pa30_arm_emulate(&in, (unsigned long)pa30_map_rva(rt, rn, pc), mregs);
+            /* Any instruction other than ADRP that writes a register clears
+             * the "page base" state the DLL keeps for that register. */
+            if (in.type != 4 && in.rd >= 0 && in.rd < 32)
+                adrpValid[in.rd] = 0;
+        }
+    }
+}
+
 /* RiftTransformDisasmAmd64: rewrite RIP-relative displacements in x64 code
  * so they still point at the same section after the rebase.  We recognise
  * the common ModRM=00/rm=101 encodings instead of running a full decoder. */
@@ -5244,6 +5602,8 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
                             if (pa30_is_ia64_image(prepared, sourceLen))
                                 pa30_transform_pdata_amd64(prepared, sourceLen,
                                                            rt, rn, sizeOfImage);
+                            if (!getenv("PA30_NO_ARM64PORT"))
+                                pa30_transform_arm64(prepared, sourceLen, rt, rn);
                             PHASE("nat-pdata");
                             if (getenv("PA30_DEBUG")) fprintf(stderr, "SEED relocs\n");
                             pa30_transform_relocs(prepared, sourceLen, rt, rn,
