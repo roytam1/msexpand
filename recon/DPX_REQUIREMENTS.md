@@ -1921,3 +1921,16 @@ Phase D is the genuine open-ended piece.
     bundles and regressed the full run, so it was removed.  The remaining
     IA64 `.text` differences therefore come from a different mechanism than
     the bundle address fields.
+
+    **IA64 seed vs decompression (part 70, decisive).**  We hooked the DLL's
+    DisassemblerIa64::Bundle::GetAddressTypes at RVA 0x52081 during an
+    OS-delegated patch (mstscax.dll) and compared its return values with a
+    C89/Python port: 8/8 bundles matched exactly, including multi-operand
+    cases (types 1,2,5,12).  So the decoder itself is faithful.  However,
+    injecting the DLL's *exact* transformed seed into our DeltaApply (via
+    PA30_SEEDFILE) for that same delta still produced 6448 differing output
+    bytes -- the same count as with our own seed.  Therefore the remaining
+    IA64/x86 mismatches are in the decompression stage, not in the seed
+    transforms or the IA64 bundle decoder.  The bundle decoder was removed
+    again as it cannot affect the result.  This is the next area to
+    investigate (a code=4/flags=02F83E decompression variant).
