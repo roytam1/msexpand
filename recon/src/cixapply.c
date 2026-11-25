@@ -228,6 +228,11 @@ int CixApplyCab(const char *cabPath, const char *outDir)
                     basis = (unsigned char *)malloc(1);
                     basisLen = 0;
                 }
+                if (getenv("PA30_DEBUG"))
+                    fprintf(stderr,
+                        "CIX APPLY pass=%d idx=%u target=%s basisId=%ld len=%lu first=%02X%02X%02X%02X\n",
+                        pass, i, f->name, (long)f->basisId, basisLen,
+                        basis[0], basis[1], basis[2], basis[3]);
                 rc = DeltaApply(patch, patchLen, basis, basisLen,
                                 &result, &resultLen);
                 free(patch);

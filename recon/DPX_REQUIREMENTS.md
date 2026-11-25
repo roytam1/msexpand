@@ -2422,3 +2422,22 @@ Phase D is the genuine open-ended piece.
     0.5 s, not just the first 40.  All other baselines stay green: KB5064399
     480/480, SSU 228/228, NDP481 arm64 2124/2124, KB5131083 209/209,
     KB2959977 513/513, KB5022508 127/141.
+
+    **Basis-ordering check (part 92).**  Added a `PA30_DEBUG` line in
+    `cixapply.c` that logs each PA30 target's pass, CIX index, basis id, basis
+    length and first four basis bytes.  For the remaining KB5022508 failures
+    (`clr.dll`, `system.identitymodel.dll`,
+    `system.servicemodel.internals.dll`) the full expansion uses the correct
+    final basis (matching SHA256), applies each target once in pass 0, and
+    still differs from a direct `test_delta.exe` run with the same blob and
+    basis bytes, which is byte-exact.  So the residual difference is not a
+    basis-ordering error; it is process state accumulated across deltas in
+    the long CIX run and needs a cross-delta isolation trace.
+
+    IA64's 1042 unmatched targets still need the
+    `RiftTransformDisasmIa64::Transform` port.  The decompiled loop
+    (`msdelta-ia64-wow32.dll.c:42514`) guards each 16-byte bundle with four
+    hint bytes (`v13[0..3] & 0x3030303` must all be zero), then calls
+    `Bundle::GetAddressTypes` / `GetAddress` / `SetAddress` with 18 address
+    types (`msdelta-ia64-wow32.dll.c:50664-51297`).  A faithful port of those
+    bit layouts is the remaining work; no partial port was committed.
