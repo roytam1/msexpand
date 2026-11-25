@@ -3,7 +3,7 @@
 This directory contains a from-scratch C89 reimplementation of the supplied
 Windows 10-era `expand.exe`, built with **Microsoft Visual C++ 6.0**.
 
-The reconstruction is driven by the IDA/Hex-Rays materials in the parent
+The reconstruction is driven by the IDA/Hex-Rays materials in the root
 directory (`expand.exe.c/.lst`, `cabinet.dll.c/.lst`, `dpx.dll.c/.lst`).
 It is a *functional core* reconstruction: the original control flow,
 messages, argument rules and exit codes are preserved, while the C++
@@ -12,7 +12,7 @@ template/COM/ETW/MUI machinery of the modern binary is folded into plain C.
 ## Build
 
 ```
-cd \\roy-xp\c\devel\cabarc\recon
+cd recon
 build.bat
 ```
 
