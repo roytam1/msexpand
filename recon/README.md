@@ -18,7 +18,7 @@ build.bat
 
 `build.bat` calls `VCVARS32.BAT`, compiles all sources with `cl /ML /W3`
 in C mode and links `expand_recon.exe`. No SDK `fdi.h`/`cabinet.lib` is
-needed ??the CAB reader is compiled into the EXE.
+needed; the CAB reader is compiled into the EXE.
 
 ## Source map
 
@@ -38,6 +38,10 @@ needed ??the CAB reader is compiled into the EXE.
 | `src/hash.c` | CRC32 and hexadecimal blob decoding |
 | `src/xpress.c` | XPRESS and XPRESS-HUFF raw decompression (ported from go-ntfs) |
 | `src/lzms.c` | LZMS raw/chunk decompression (ported from wimlib, LGPL-2.1+) |
+| `src/delta.c` | PA30 `DeltaApply`, PA19 `Pa19Apply`, RIFT/compo codecs and PE seed transforms |
+| `src/mslzx.c` | LZXD decoder used by PA19 sections (see `../FORMAT.md`) |
+| `src/pefix.c` | PA19 PE seed transform (relocations, imports, exports, resources) |
+| `test_delta.c` / `test_arm32hint.c` | PA30 delta harness and ARM32 hint-mask unit check |
 | `test_lzms.c` / `test_lzms.bat` | Generates vectors with the OS compressor and runs the LZMS tests |
 | `test_xpress.c` / `test_xpress.bat` | Runs the 40 go-ntfs XPRESS vectors |
 | `test_sfx.bat` | Unpacks the IE6 SP1 hotfix SFX natively and compares all patched binaries with the SFX-run outputs |
@@ -46,7 +50,7 @@ needed ??the CAB reader is compiled into the EXE.
 ## What is implemented
 
 * Exact banner, help, error and progress messages, recovered **verbatim**
-  from the RT_STRING resources of the supplied `expand.exe` (IDs 1??0).
+  from the RT_STRING resources of the supplied `expand.exe`.
 * Full `-R`, `-I`, `-?`, `-D`, `-F:` option handling plus the hidden
   `-K:` / `-E:` switches, with the original argument-count / target-directory
   rules and exit codes.
@@ -83,7 +87,8 @@ needed ??the CAB reader is compiled into the EXE.
   targets match their manifest
   SHA256 hashes and lengths, as are the 209 targets of `KB5131083`, both
   natively and via OS delegation. KB4539601 IA64 matches all 3279 CIX targets
-  natively. Nested packages are walked through their
+  natively. KB5022513 ARM matches all 161 targets after the offset-rift
+  composition was made dynamic. Nested packages are walked through their
   packaging descriptors (`toc.xml`, `cabinet.cablist.ini`) so the payload
   CABs of Windows 10 LCUs are expanded too, without expanding the `.cab`
   data files shipped inside those payloads. CAB images are memory-mapped,
@@ -121,7 +126,7 @@ needed ??the CAB reader is compiled into the EXE.
   inside CABs. Building a PSF requires the
   `job.xml` / CIX machinery of `dpx.dll`, which is far beyond the core.
 * Cabinet compression types other than 0 (none), 1 (MSZIP) and 3 (LZX)
-  ??Quantum, LZMS ??are reported as `Unrecognized compression scheme`.
+  (for example Quantum or LZMS) are reported as `Unrecognized compression scheme`.
 * Split/spanned cabinets and the `-K:` / `-E:` encryption path are not
   implemented.
 * MUI localisation, ETW tracing and the asynchronous progress thread are

@@ -12,7 +12,9 @@ little-endian fixed-width fields. Where a format is bit-packed, bits are read
 
 The reference implementation is `recon/src/delta.c` (`Pa19Apply` and the
 `DeltaApply` PA30 path). `recon/COMPO_SPEC.md` holds additional compo research
-notes.
+notes. The LZXD codec used by PA19 sections is documented in the
+[LZXD](#lzxd) section below; it is distinct from the CFDATA-based LZX folders
+decoded by `recon/src/lzx.c`.
 
 ## Conventions
 
@@ -235,6 +237,147 @@ decoding; they are verification values.
 
 ---
 
+# LZXD
+
+LZXD is the patch engine's LZX variant. It is the codec inside each PA19
+section chunk; it is **not** the same bitstream as the LZX used in CAB folders.
+The implementation is `recon/src/mslzx.c`, whose entry point is
+`MsLzxDecompressSeededMulti(chunks, sizes, nchunks, out, outLen, windowBits,
+seed, seedLen)`.
+
+## Bit cache
+
+Unlike the compo reader, LZXD consumes Huffman code bits **MSB-first**, from
+the top of a 32-bit cache:
+
+```
+bitbuf = word1 | (word0 << 16)     # two little-endian 16-bit words
+bitcount = 16                      # only the first word is "valid"
+getbits(n) = bitbuf >> (32 - n)     # peek, then fillbuf(n)
+fillbuf(n): bitbuf <<= n; bitcount -= n
+            while bitcount <= 0: append the next word << -bitcount
+```
+
+Huffman lookups peek at the table's primary-bit count **without refilling**;
+`fillbuf(codeLength)` runs only after the symbol has been consumed. The cache
+is re-initialised (two words preloaded, `bitcount = 16`) at the start of every
+chunk, so no bits carry across chunk boundaries.
+
+## Stream framing
+
+The first chunk of a section carries two stream-level fields before any block:
+
+```
+e8Present (1 bit)
+if e8Present:
+    highHalf = getbits(16)         # first word
+    lowHalf  = getbits(16)         # second word
+    e8Base   = (lowHalf << 16) | highHalf   # uncompressed size
+```
+
+Then the chunk is a sequence of blocks:
+
+```
+blockType  (3 bits)     1 = verbatim, 2 = aligned offset, 3 = uncompressed
+blockSize  (24 bits)    three 8-bit reads, high byte first
+```
+
+A zero `blockSize` terminates the stream. Type 1 and 2 blocks carry freshly
+encoded Huffman trees; type 3 is raw bytes (not implemented in the native
+PA19 path). Block state continues across chunks: only the bit cache resets,
+not the trees or the three repeat offsets.
+
+## Huffman trees
+
+Every tree is described by a 20-symbol precode whose lengths are four bits
+each:
+
+```
+smallLen[0..19] = getbits(4)        # 8-bit primary table over these symbols
+for each element:
+    s = decode_small()
+    0..16 -> previousLength - symbol (mod 17)
+    17    -> 4 + getbits(4) zeros
+    18    -> 20 + getbits(5) zeros
+    19    -> 4 + getbits(1) repeats of one delta symbol
+```
+
+Canonical codes are built with a short primary table plus negative
+`leftright[]` subtable references:
+
+| Tree | Primary bits | Symbols |
+|------|-------------:|---------|
+| main | 10 | 256 literals + position slots x 8 lengths |
+| length | 8 | 249 secondary lengths |
+| aligned | 7 | 8 aligned-offset symbols (3-bit lengths) |
+| precode | 8 | 20 small symbols |
+
+The main tree's literal half and position-slot half are read as separate
+delta-coded sequences, both against the previous block's tree; the length tree
+is likewise delta-coded against the previous length tree. The aligned tree is
+the exception: its eight lengths are written directly as three bits each.
+
+The number of main-tree position slots depends on `windowBits`; the native
+port grows the table until `slot_base[n]` reaches `2^windowBits - 3` (about 30
+slots for a 15-bit window and up to 290 for large windows).
+
+Position slots and their extra bits:
+
+```
+slot_base[0..3]  = 0, 1, 2, 3                     (step 1)
+slot_base[4..35] = cumulative 1 << (slot/2 - 1)   (step doubles every two slots)
+slot_base[36..]  = cumulative 1 << 17
+extra_bits[slot] = 0,0,0,0,1,1,2,2,...,16,16,17...
+```
+
+## Match decoding
+
+A main-tree symbol `c < 256` is a literal. Otherwise:
+
+```
+length = c & 7
+if length == 7: length += decode_length_tree()
+slot   = (c - 256) >> 3
+
+if slot <= 2:  distance = reps[slot]              # LRU repeat offsets
+               rotate that entry to the front
+else:
+    verbatim: distance = getbits(extra_bits[slot]) + slot_base[slot] - 2
+    aligned:  high = getbits(extra_bits[slot] - 3)
+              distance = slot_base[slot] - 2 + (high << 3)
+                         + decode_aligned_tree()   # low 3 bits
+              (slots with fewer than 3 extra bits have no alignment step)
+    reps = shift right, insert distance at front
+
+length += 2                                        # MIN_MATCH
+if length == 257:                                  # EXTRALONGMATCHES
+    x = getbits(9)
+    length += x                             if !(x & 0x100)
+              ((x & 0x7F) << 3) + getbits(3) + 256  if !(x & 0x80)
+              (((x & 0x3F) << 9) | getbits(9))      if (x & 0x40)
+              (((x & 0x3F) << 6) | getbits(6)) + 1280 otherwise
+```
+
+Matches overlap: bytes are copied one at a time from
+`window[(outPos - distance) & windowMask]`. The window is `2^windowBits`
+bytes and is addressed modulo its size; a match may therefore reach into
+bytes written earlier in the same block.
+
+## Window seed and E8 translation
+
+The seed (see PA19 *Seed image*) is placed at the **end** of the window:
+`window + (1 << windowBits) - seedLen`. Everything before it is zero. The
+decoder must therefore use the transformed copy of the old file, not the raw
+one, or matches into the seed produce wrong bytes.
+
+When `e8Present` is set, an x86 post-pass runs after decompression, in
+32768-byte windows with a 10-byte overlap guard. An absolute `E8 rel32` target
+below `e8Base` becomes relative by subtracting the output position; a wrapped
+negative target in `[-position, 0)` becomes absolute by adding `e8Base`.
+Other `E8` bytes are left alone.
+
+---
+
 # PA30
 
 PA30 is the `msdelta` container. Its header is bit-packed; its payload is a
@@ -382,8 +525,16 @@ the LSB-first bit reader used everywhere else.
   transform (`recon/src/pefix.c`) and the LZXD decoder
   (`recon/src/mslzx.c`). PA19 application still prefers `mspatcha.dll` when
   present and falls back to the native path (force it with `PA19_NO_OS=1`).
+* The LZXD decoder above is the patch-engine variant (`mslzx.c`), not the
+  CAB LZX decoder (`lzx.c`). It consumes 32 KiB chunks with a fresh bit cache
+  but persistent Huffman trees and repeat offsets, and reads matches from a
+  seed image that has already been through the PA19 PE transform.
 * PA30 header parsing, the `IntFormat`, the RIFT table, the CompositeFormat
-  header and the compo decompressor are implemented in `recon/src/delta.c`.
+  header and the compo decompressor are implemented in `recon/src/delta.c`,
+  together with the IA64/ARM32/ARM64 seed transforms and dynamic composition
+  of the offset rift. Native verification includes KB4539601 IA64 3279/3279
+  and KB5022513 ARM 161/161; `recon/diag/rust-oracle` holds optional
+  differential oracles but the build has no Rust dependency.
 * CAB folders of types 0, 1 and 3 (LZX) are decoded natively by
   `recon/src/cab.c`; an LZX folder's CFDATA payloads are concatenated into
   one continuous stream before decoding, because the Huffman trees, repeat

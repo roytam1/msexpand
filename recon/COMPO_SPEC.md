@@ -1,7 +1,10 @@
 # PA30 compo patch-stream format (research notes)
 
-These notes are the implementation map for finishing PA30 delta support in
-`recon/src/delta.c`. They were derived from `msdelta.dll.c` / `.lst`.
+These notes were the implementation map for PA30 delta support in
+`recon/src/delta.c`; the port is now complete for the patch streams used by
+the regression corpus. `../FORMAT.md` has the current format description and
+`DPX_REQUIREMENTS.md` records the validation history. These notes were derived
+from `msdelta.dll.c` / `.lst`.
 
 ## Container / header (IMPLEMENTED in delta.c)
 
@@ -24,7 +27,7 @@ payload bits (n<8), else 32 bits + discard `4n-28`.
 Both generated vectors: version=1, code=1, flags=0, hash empty, pre empty,
 patch 15 bytes (9000-byte target) / 301 bytes (4096-byte target).
 
-## Patch blob bitstream (partially implemented)
+## Patch blob bitstream (IMPLEMENTED in delta.c)
 
 Opened as a new bit reader (3-bit leader skipped), then:
 
@@ -61,7 +64,7 @@ neg = (s >= 126); if neg s -= 126;
 if s >= 4: `v = (((s&1)+2) << ((s>>1)-1)) | read_bits((s>>1)-1)` else `v = s`;
 return `neg ? ~v : v`.
 
-## Decompress (NOT IMPLEMENTED)
+## Decompress (IMPLEMENTED in delta.c)
 
 `Decompress::InternalProcess` (assembly `.lst:60824-61570`) loops:
 - choose `CompressionFormat` for current output position (segment boundaries)
@@ -77,14 +80,21 @@ return `neg ? ~v : v`.
 over 0x258 symbols; `k=(s-256)>>3`, low 3 bits pick length table;
 k<3 => raw 14/16/18-bit distance with wrap; k>=3 => secondary Huffman length.
 
-## Effort remaining
+## Status
 
-Roughly 1,500–2,500 more lines of careful C89: `CompressionLengths::Read`
-(872 lengths, 39-symbol meta Huffman + run codes), canonical Huffman table
-builder shared with `IntFormat`, `CompressionFormat::ReadSymbol`, `OffsetRiftTable`
-lookup, and the decompress loop including repeat distances and the default-format
-special case. This is the last blocker for PA30 apply.
+`CompressionLengths::Read`, the canonical Huffman builder,
+`CompressionFormat::ReadSymbol`, the `OffsetRiftTable` lookup and the
+decompression loop are all implemented in `recon/src/delta.c`. The offset rift
+is built with growable vectors so large managed deltas do not truncate it; the
+ARM32 hint mask and the x86-only relative branch passes follow the reference
+transform gates.
 
-For PA19 (`delta.c` has a spec-based but unvalidated applier) there is no
-public patch-creation API in `mspatcha.dll`, so generating a test vector
-requires either a real-world PA19 patch or writing a patch encoder.
+Native PA30 verification covers the IA64 KB4539601 (3279/3279) and the ARM
+KB5022513 (161/161) corpora, plus the packages listed in `DPX_REQUIREMENTS.md`.
+Generated raw/PA31/BsDiff deltas and real deltas are also compared against the
+optional Rust oracles in `diag/rust-oracle`; the production build does not
+depend on Rust. `PA30_NO_OS=1` forces the native path.
+
+PA19 has real test vectors: the IE6 SP1 hotfix CAB carries 17 `*.dll._p`
+patches, and both the `mspatcha.dll` path and the native `mslzx.c` LZXD decoder
+are byte-exact on them. `PA19_NO_OS=1` forces the native path.
