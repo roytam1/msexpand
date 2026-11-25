@@ -2394,3 +2394,31 @@ Phase D is the genuine open-ended piece.
 
     Regressions re-verified with the swap: SSU 228/228, NDP481 arm64 2124/2124,
     KB5131083 209/209, KB2959977 513/513, KB5022508 127/141.
+
+    **IA64 patching speed (part 91).**  Expanding
+    `windows6.1-kb4539601-ia64_...msu` slowed to a crawl on some deltas:
+    `ia64\ntdll.dll` (blob 21) and `x86\tkrnlpa.exe` (blob 23) each took about
+    37 seconds.  Per-phase timing traced this to two hot loops:
+
+      - `pa30_mark_nonexe` walked import descriptors from the import RVA to
+        the **end of the image**, treating every 20-byte window as a
+        descriptor when the image had a bogus or relocated import directory.
+        The walk is now bounded by the import directory size, with caps on
+        thunk entries and name length.  This was 36.6 s of the 37 s.
+      - `pa30_transform_pointers` compared each 32-bit dword against a 64-bit
+        `oldBase` (0xE000000084000000 on blob 21), which cannot match any
+        32-bit dword and cost ~3 microseconds per byte in the unoptimized
+        build.  It now skips the scan when `oldBase` has high bits and uses
+        32-bit bounds otherwise.
+
+    A separate crash at target 172 (`sspicli.dll`, blob 164) was found to
+    predate these changes.  The export-directory marking in `pa30_mark_nonexe`
+    wrote past the hint buffer when `pa30_rva_off` returned an offset beyond
+    the image; it is now bounded by `len`.
+
+    Result: the IA64 MSU completes with the same baseline as before —
+    Patching 3060/3279, Verification 2237/3279 — but the slowest timed target
+    is now 0.56 s instead of 37 s.  `PA30_TIMING` now reports any target over
+    0.5 s, not just the first 40.  All other baselines stay green: KB5064399
+    480/480, SSU 228/228, NDP481 arm64 2124/2124, KB5131083 209/209,
+    KB2959977 513/513, KB5022508 127/141.

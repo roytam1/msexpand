@@ -256,9 +256,12 @@ int CixApplyCab(const char *cabPath, const char *outDir)
                     continue;
             }
             done[i] = 1;
-            if (getenv("PA30_TIMING") && i < 40)
-                fprintf(stderr, "TIMING %u %s %.3f\n", i, f->name,
-                        (double)clock() / CLOCKS_PER_SEC - t0);
+            if (getenv("PA30_TIMING"))
+            {
+                double dt = (double)clock() / CLOCKS_PER_SEC - t0;
+                if (i < 40 || dt >= 0.5)
+                    fprintf(stderr, "TIMING %u %s %.3f\n", i, f->name, dt);
+            }
             ProgressItem("Patching", i + 1, cix.count, f->name, "OK");
             ++progress;
             ++produced;

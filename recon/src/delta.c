@@ -2845,38 +2845,45 @@ static void pa30_mark_nonexe(const unsigned char *buf, unsigned long len,
      * bytes so an E8/E9 inside a name is not decoded as a branch. */
     {
         unsigned long ir = rd32(buf + PA30_DD(buf, opt) + 8);
-        unsigned long io, d, lim;
+        unsigned long isz = rd32(buf + PA30_DD(buf, opt) + 12);
+        unsigned long nDesc, di, io;
         if (ir)
         {
             io = pa30_rva_off(buf, len, ir);
-            if (io != 0xFFFFFFFFUL)
+            /* Bound the walk by the import directory size.  Walking to the
+             * end of the image makes malformed or relocated images extremely
+             * slow, because every 20-byte window is treated as a descriptor. */
+            nDesc = isz / 20;
+            if (nDesc > 4096) nDesc = 4096;
+            if (io != 0xFFFFFFFFUL && io + 20 <= len)
             {
-                lim = len;
-                for (d = io; d + 20 <= lim; d += 20)
+                unsigned long d = io;
+                for (di = 0; di < nDesc && d + 20 <= len; ++di, d += 20)
                 {
-                    unsigned long oft = rd32(buf + d);
-                    unsigned long ft = rd32(buf + d + 16);
-                    unsigned long t, th[2];
+                    unsigned long th[2];
                     int q;
                     if (!rd32(buf + d + 12) && !rd32(buf + d + 8) &&
                         !rd32(buf + d + 4)) break;
-                    th[0] = oft; th[1] = ft;
+                    th[0] = rd32(buf + d);
+                    th[1] = rd32(buf + d + 16);
                     for (q = 0; q < 2; ++q)
                     {
+                        unsigned long t, ti;
                         if (!th[q]) continue;
                         t = pa30_rva_off(buf, len, th[q]);
                         if (t == 0xFFFFFFFFUL) continue;
-                        while (t + 4 <= len)
+                        for (ti = 0; ti < 4096 && t + 4 <= len; ++ti)
                         {
                             unsigned long v = rd32(buf + t);
-                            unsigned long no;
+                            unsigned long no, nk;
                             if (!v) break;
                             t += 4;
                             if (v & 0x80000000UL) continue;
                             no = pa30_rva_off(buf, len, v);
                             if (no == 0xFFFFFFFFUL || no + 2 > len) continue;
-                            for (k = no; k < len && buf[k]; ++k) mask[k] |= 0x01U;
-                            if (k < len) mask[k] |= 0x01U;
+                            for (nk = no; nk < len && nk - no < 256 &&
+                                          buf[nk]; ++nk) mask[nk] |= 0x01U;
+                            if (nk < len) mask[nk] |= 0x01U;
                         }
                     }
                 }
@@ -2892,10 +2899,12 @@ static void pa30_mark_nonexe(const unsigned char *buf, unsigned long len,
         if (er && es)
         {
             eo = pa30_rva_off(buf, len, er);
-            if (eo != 0xFFFFFFFFUL && es > len - eo) es = len - eo;
-            if (eo != 0xFFFFFFFFUL)
+            if (eo != 0xFFFFFFFFUL && eo < len)
+            {
+                if (es > len - eo) es = len - eo;
                 for (k = 0; k < es; ++k)
                     mask[eo + k] |= 0x01U;
+            }
         }
     }
 }
@@ -2916,10 +2925,21 @@ static void pa30_transform_pointers(unsigned char *buf, unsigned long len,
     unsigned char *hint;
     unsigned long pos;
     unsigned long end = len >= 4 ? len - 4 : 0;
+    unsigned long base32, lim32;
+    int limWrap;
     int skipImm = getenv("PA30_SKIPIMM") != NULL;
 
     if (!sizeOfHeaders || sizeOfHeaders >= end || !sizeOfImage)
         return;
+    /* `v` is a 32-bit dword.  When the old image base has high bits set no
+     * dword can fall inside [oldBase, oldBase+sizeOfImage), so skip the byte
+     * scan entirely.  Otherwise keep the hot loop in 32-bit arithmetic; a
+     * 64-bit compare per byte is very slow in this unoptimized build. */
+    if (oldBase >> 32)
+        return;
+    base32 = (unsigned long)oldBase;
+    lim32 = base32 + sizeOfImage;
+    limWrap = (lim32 < base32);
     hint = (unsigned char *)calloc((size_t)len, 1);
     if (!hint) return;
     if (relocMask) memcpy(hint, relocMask, len);
@@ -2942,7 +2962,8 @@ static void pa30_transform_pointers(unsigned char *buf, unsigned long len,
             ++pos;
             continue;
         }
-        if (v >= oldBase && v < oldBase + sizeOfImage)
+        if (limWrap ? (v >= base32 || v < lim32)
+                    : (v >= base32 && v < lim32))
         {
             unsigned k;
             unsigned __int64 nv;
