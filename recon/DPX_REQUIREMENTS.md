@@ -2378,3 +2378,19 @@ Phase D is the genuine open-ended piece.
 
     The package now verifies **478/480**; the remaining target is `clr.dll`
     plus its `wpfgfx_v0400.dll` cascade.
+
+    **Root cause — transform order (part 90).**  A per-transform seed trace
+    (breakpoint at each DLL `Transform` entry, reading the bytes at seed
+    offset 0x165810) showed the write happens in `RiftTransformRelativeJmpsI386`.
+    At source offset 0x165810 an E8 call has rel32 `db b3 e9 ff`, so an E9
+    opcode byte sits inside the call operand.  The DLL runs the relative-jump
+    pass **before** the relative-call pass and rewrites that embedded E9;
+    `RiftTransformRelativeCallsI386` then leaves the operand alone.  Our
+    pipeline ran the two passes in the opposite order, so our relative-call
+    pass overwrote the E9 byte before the jump pass could see it.  Swapping
+    the order in `DeltaApply` makes blob 19 byte-exact and lifts the package
+    to **480/480**.  The earlier wrong guesses (generic MapRva, inferred
+    relocations, CLI metadata) were ruled out by the per-transform trace.
+
+    Regressions re-verified with the swap: SSU 228/228, NDP481 arm64 2124/2124,
+    KB5131083 209/209, KB2959977 513/513, KB5022508 127/141.

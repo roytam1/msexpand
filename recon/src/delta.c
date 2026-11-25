@@ -5735,17 +5735,22 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
                                 pa30_rewrite_imports(prepared, sourceLen,
                                                      rt, rn);
                             PHASE("nat-imports");
-                            if (getenv("PA30_DEBUG")) fprintf(stderr, "SEED relcalls\n");
-                            if (rd16(prepared + lfa + 24) == 0x10B)
-                            pa30_transform_relcalls(prepared, sourceLen, rt,
-                                                    rn, hintBuf, sizeOfImage);
-                            PHASE("nat-relcalls");
+                            /* The DLL runs the relative-jump pass before the
+                             * relative-call pass.  This matters when an E9
+                             * opcode byte occurs inside an E8 call's rel32:
+                             * the jump pass must see the original operand
+                             * before the call pass overwrites it. */
                             if (getenv("PA30_DEBUG")) fprintf(stderr, "SEED reljmps\n");
                             if (rd16(prepared + lfa + 24) == 0x10B)
                             pa30_transform_reljmps(prepared, sourceLen, rt,
                                                    rn, hintBuf, sizeOfImage,
                                                    source);
                             PHASE("nat-reljmps");
+                            if (getenv("PA30_DEBUG")) fprintf(stderr, "SEED relcalls\n");
+                            if (rd16(prepared + lfa + 24) == 0x10B)
+                            pa30_transform_relcalls(prepared, sourceLen, rt,
+                                                    rn, hintBuf, sizeOfImage);
+                            PHASE("nat-relcalls");
                             if (getenv("PA30_DEBUG")) fprintf(stderr, "SEED exports\n");
                             pa30_transform_exports(prepared, sourceLen,
                                                    rt, rn);
