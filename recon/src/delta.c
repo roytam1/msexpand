@@ -2986,6 +2986,281 @@ static void pa30_transform_pointers(unsigned char *buf, unsigned long len,
     free(hint);
 }
 
+/* ---- IA64 seed transform (ported from RiftTransformDisasmIa64) ---- */
+static unsigned __int64 ia64mk(unsigned long lo, unsigned long hi)
+{
+    return ((unsigned __int64)hi << 32) | lo;
+}
+
+/* DisassemblerIa64::Bundle::GetAddressTypes.  The result is the list of
+ * address-bearing operand kinds (1..18) in the 16-byte bundle. */
+static int pa30_ia64_addr_types(const unsigned long w[4], int types[18])
+{
+    unsigned long v2 = w[1];
+    unsigned long v3 = w[0] & 0x1F;
+    unsigned long v20 = v2 & 0x3F;
+    unsigned long v4 = (v2 >> 10) & 0xF;
+    unsigned long v5 = (v2 >> 6) & 7;
+    unsigned __int64 q1 = ia64mk(w[2], w[3]);
+    unsigned long v8, v9, v10, v15, v16, v17, v18;
+    int n = 0;
+
+    switch (v3)
+    {
+    case 6: case 7: case 0x14: case 0x15: case 0x1A: case 0x1B:
+    case 0x1E: case 0x1F:
+        return 0;
+    case 0x16: case 0x17:
+        if (v4 == 2)
+        {
+            if (v20 == 1 || v20 == 5) types[n++] = 13;
+            break;
+        }
+        if (v4 <= 3) break;
+        if (v4 > 5)
+        {
+            if (v4 == 7) { types[n++] = 10; types[n++] = 13; }
+            break;
+        }
+        types[n++] = 10;
+        break;
+    default:
+        if (v4)
+        {
+            if (v4 == 1)
+            {
+                if (v5 == 1 || v5 == 3) types[n++] = 4;
+            }
+            else if (v4 == 9 && (w[0] & 0x6000000UL) == 0x2000000UL)
+                types[n++] = 1;
+        }
+        else if (v5 >= 4)
+            types[n++] = 10;
+        break;
+    }
+
+    v8 = (unsigned long)((q1 >> 19) & 0xF);
+    v9 = (unsigned long)((q1 >> 15) & 7);
+    v10 = (unsigned long)((q1 >> 9) & 0x3F);
+    switch (v3)
+    {
+    case 0: case 1: case 2: case 3: case 0x10: case 0x11:
+        if (v8)
+        {
+            if (v8 == 9 && (w[2] & 0xC) == 4) types[n++] = 2;
+        }
+        else if (v9 == 1)
+            types[n++] = 5;
+        else if (v9 == 7)
+            types[n++] = 8;
+        break;
+    case 4: case 5:
+        break;
+    case 0xC: case 0xD: case 0x1C: case 0x1D:
+        if (!v8 && !(q1 & 0x8000ui64) && v10 == 32) types[n++] = 16;
+        break;
+    case 0x12: case 0x13: case 0x16: case 0x17:
+        if (v8 == 2)
+        {
+            if (v10 == 1 || v10 == 5) types[n++] = 14;
+        }
+        else if (v8 > 3)
+        {
+            if (v8 > 5)
+            {
+                if (v8 == 7) { types[n++] = 11; types[n++] = 14; }
+            }
+            else
+                types[n++] = 11;
+        }
+        break;
+    default:
+        if (v8)
+        {
+            if (v8 == 1)
+            {
+                if (v9 == 1 || v9 == 3) types[n++] = 5;
+            }
+            else if (v8 == 9 && (w[2] & 0xC) == 4)
+                types[n++] = 2;
+        }
+        else if (v9 >= 4)
+            types[n++] = 11;
+        break;
+    }
+
+    v15 = w[3];
+    v16 = v15 >> 28;
+    v17 = (v15 >> 24) & 7;
+    v18 = (v15 >> 18) & 0x3F;
+    if (v3 > 0xD)
+    {
+        if (v3 <= 0xF)
+        {
+            if (!v16 && !(v17 & 1) && v18 == 32) types[n++] = 17;
+            return n;
+        }
+        if (v16 == 2)
+        {
+            if (v18 == 1 || v18 == 5) types[n++] = 15;
+            return n;
+        }
+        if (v16 > 3)
+        {
+            if (v16 <= 5) types[n++] = 12;
+            else if (v16 == 7) { types[n++] = 12; types[n++] = 15; }
+        }
+        return n;
+    }
+    if (v3 > 3 && v3 < 8)
+    {
+        if (v3 <= 5 && v16 >= 0xC && v16 <= 0xD) types[n++] = 18;
+        return n;
+    }
+    if (!v16)
+    {
+        if (v17 == 1) types[n++] = 6;
+        else if (v17 == 7) types[n++] = 9;
+        return n;
+    }
+    if (v16 == 9 && ((q1 >> 43) & 3) == 1) types[n++] = 3;
+    return n;
+}
+
+/* Bit layouts below are generated from the IA64 DLL's Bundle::GetAddress
+ * and Bundle::SetAddress routines by probing one input bit at a time. */
+#include "ia64_tables.h"
+
+static unsigned long pa30_ia64_get_address(const unsigned long w[4], int type)
+{
+    unsigned long r;
+    int b;
+    if (type < 1 || type > 18) return 0;
+    r = ia64_get_base[type];
+    for (b = 0; b < 32; ++b)
+    {
+        int src = ia64_get_src[type][b];
+        if (src >= 0 && ((w[src >> 5] >> (src & 31)) & 1))
+            r |= 1UL << b;
+    }
+    return r;
+}
+
+static void pa30_ia64_set_address(unsigned long w[4], int type,
+                                  unsigned __int64 value)
+{
+    int b;
+    if (type < 1 || type > 18) return;
+    for (b = 0; b < 4; ++b)
+        w[b] = (w[b] & ~ia64_set_clr[type][b]) | ia64_set_base[type][b];
+    for (b = 0; b < 128; ++b)
+    {
+        int src = ia64_set_src[type][b];
+        if (src >= 0 && ((value >> src) & 1ui64))
+            w[b >> 5] |= 1UL << (b & 31);
+    }
+}
+
+/* RiftTransformDisasmIa64::Transform.  The DLL uses one hint byte per source
+ * byte and only decodes bundles whose 16 hint bytes are all clear in bits 0
+ * and 1.  Function ranges must fit in one section's raw data, matching
+ * SectionHelper::GetImageOffset; malformed .pdata entries are ignored. */
+static void pa30_transform_ia64(unsigned char *buf, unsigned long len,
+                                const RIFTENTRY *rt, unsigned rn,
+                                const unsigned char *hint,
+                                unsigned __int64 newBase)
+{
+    unsigned long pe, opt, sh, nsec, s;
+    unsigned long pdRva = 0, pdSize = 0, gpRva = 0;
+    unsigned long off = 0, end = 0, i;
+    if (!pa30_is_ia64_image(buf, len)) return;
+    if (getenv("PA30_NO_IA64PORT")) return;
+    pe = rd32(buf + 0x3C);
+    opt = pe + 24;
+    if (opt + 0x90 > len || !PA30_MAGIC_OK(rd16(buf + opt))) return;
+    sh = opt + rd16(buf + pe + 20);
+    nsec = rd16(buf + pe + 6);
+    pdRva = rd32(buf + PA30_DD(buf, opt) + 3 * 8);
+    pdSize = rd32(buf + PA30_DD(buf, opt) + 3 * 8 + 4);
+    gpRva = rd32(buf + PA30_DD(buf, opt) + 8 * 8);
+    if (!pdRva || !pdSize) return;
+    for (s = 0; s < nsec && sh + 40 <= len; ++s, sh += 40)
+    {
+        unsigned long va = rd32(buf + sh + 12);
+        unsigned long vs = rd32(buf + sh + 8);
+        unsigned long raw = rd32(buf + sh + 20);
+        unsigned long rs = rd32(buf + sh + 16);
+        if (va <= pdRva && pdRva < va + (vs > rs ? vs : rs))
+        {
+            off = raw + (pdRva - va);
+            if (off > len) return;
+            end = off + pdSize;
+            if (end > len) end = len;
+            break;
+        }
+        off = end = 0;
+    }
+    if (!off || end <= off) return;
+    for (i = 0; i + 12 <= end - off; i += 12)
+    {
+        unsigned long begin = rd32(buf + off + i);
+        unsigned long finish = rd32(buf + off + i + 4);
+        unsigned long start, limit, p, rva;
+        if (finish <= begin) continue;
+        start = 0xFFFFFFFFUL;
+        for (s = 0, sh = opt + rd16(buf + pe + 20);
+             s < nsec && sh + 40 <= len; ++s, sh += 40)
+        {
+            unsigned long va = rd32(buf + sh + 12);
+            unsigned long vs = rd32(buf + sh + 8);
+            unsigned long raw = rd32(buf + sh + 20);
+            unsigned long rs = rd32(buf + sh + 16);
+            if (va <= begin && begin < va + vs)
+            {
+                unsigned long delta = begin - va;
+                if (delta <= rs && finish - begin <= rs - delta &&
+                    raw <= len && delta <= len - raw &&
+                    finish - begin <= len - raw - delta)
+                    start = raw + delta;
+                break;
+            }
+        }
+        if (start == 0xFFFFFFFFUL || start >= len) continue;
+        limit = start + (finish - begin);
+        if (limit > len) limit = len;
+        for (p = start, rva = begin; p + 16 <= limit; p += 16, rva += 16)
+        {
+            unsigned long w[4], j;
+            int types[18], n, k;
+            for (j = 0; j < 16 && p + j < len; ++j)
+                if (hint && (hint[p + j] & 3)) break;
+            if (j < 16) continue;
+            w[0] = rd32(buf + p); w[1] = rd32(buf + p + 4);
+            w[2] = rd32(buf + p + 8); w[3] = rd32(buf + p + 12);
+            n = pa30_ia64_addr_types(w, types);
+            for (k = 0; k < n; ++k)
+            {
+                int type = types[k];
+                unsigned long address = pa30_ia64_get_address(w, type);
+                unsigned __int64 value;
+                if (type <= 0 || type > 3)
+                {
+                    long mapped = (long)pa30_map_rva(rt, rn, rva);
+                    long target = (long)pa30_map_rva(rt, rn,
+                                         (unsigned long)(rva + 16UL * address));
+                    value = ((unsigned __int64)(target - mapped)) >> 4;
+                }
+                else
+                    value = (unsigned __int64)((long)pa30_map_rva(rt, rn,
+                                         gpRva + address) - (long)newBase);
+                pa30_ia64_set_address(w, type, value);
+            }
+            pa30_set_u32(buf, p, w[0]); pa30_set_u32(buf, p + 4, w[1]);
+            pa30_set_u32(buf, p + 8, w[2]); pa30_set_u32(buf, p + 12, w[3]);
+        }
+    }
+}
+
 /* ---- ARM64 seed transform (ported from RiftTransformDisasmARM64) ---- */
 typedef struct tagARMINSN
 {
@@ -4256,8 +4531,7 @@ static void pa30_transform_resources(unsigned char *buf, unsigned long len,
 static void pa30_transform_relocs(unsigned char *buf, unsigned long len,
                                   const RIFTENTRY *rt, unsigned rn,
                                   unsigned __int64 oldBase,
-                                  unsigned __int64 newBase,
-                                  unsigned long sizeOfImage)
+                                  unsigned __int64 newBase)
 {
     unsigned long pe, opt, rrva, rsize, off, end, n = 0, i, w, cap = 0;
     RELOC *rel;
@@ -4322,8 +4596,9 @@ static void pa30_transform_relocs(unsigned char *buf, unsigned long len,
             unsigned long type = entry >> 12;
             unsigned long roff = entry & 0xFFF;
             if (!type) continue;
-            /* The DLL's ReadRelocationEntries rebases the VA stored at the
-             * relocation site itself (msdelta.dll.c:35375). */
+            /* ReadRelocationEntries rebases only HIGHLOW (3) and DIR64 (10)
+             * sites.  Other nonzero types are padding in the rebuilt table. */
+            if (type == 3 || type == 10)
             {
                 unsigned long fo = pa30_rva_off(buf, len, page + roff);
                 unsigned long width = (type == 10) ? 8 : 4;
@@ -4331,25 +4606,23 @@ static void pa30_transform_relocs(unsigned char *buf, unsigned long len,
                 {
                     unsigned __int64 v = (type == 10) ? rd64(buf + fo) :
                                                        rd32(buf + fo);
-                    if (v >= oldBase && v < oldBase + sizeOfImage)
+                    unsigned __int64 nv =
+                        (unsigned __int64)pa30_map_rva(rt, rn,
+                            (unsigned long)(v - oldBase)) + newBase;
+                    if (type == 10)
                     {
-                        unsigned __int64 nv =
-                            (unsigned __int64)pa30_map_rva(rt, rn,
-                                (unsigned long)(v - oldBase)) + newBase;
-                        if (type == 10)
-                        {
-                            unsigned k;
-                            for (k = 0; k < 8; ++k)
-                                buf[fo + k] = (unsigned char)(nv >> (8 * k));
-                        }
-                        else
-                            pa30_set_u32(buf, fo, (unsigned long)nv);
+                        unsigned k;
+                        for (k = 0; k < 8; ++k)
+                            buf[fo + k] = (unsigned char)(nv >> (8 * k));
                     }
+                    else
+                        pa30_set_u32(buf, fo, (unsigned long)nv);
                 }
             }
             rel[n].rva = (unsigned long)pa30_map_rva(rt, rn,
                                                      (long)(page + roff));
-            rel[n].type = (unsigned short)type;
+            rel[n].type = (type == 1 || type == 2 || type == 3 ||
+                           type == 4 || type == 10) ? (unsigned short)type : 0;
             rel[n].extra = (type == 4 && e + 4 <= bsize)
                          ? rd16(buf + off + e + 2) : 0;
             if (type == 4) ++e;
@@ -5230,6 +5503,7 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
         unsigned tmpN = 0;
         COMPFMT cf;
         unsigned long peTimeStamp = 0;
+        unsigned long targetGp = 0;
         unsigned __int64 peImageBase = 0;
         const unsigned char *decompressSrc = source;
         RIFTENTRY *orift = NULL;
@@ -5258,6 +5532,7 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
                 unsigned long gp;
                 peImageBase = br_read64(&ti);
                 gp = br_read(&ti, 32);
+                targetGp = gp;
                 peTimeStamp = br_read(&ti, 32);
                 if (getenv("PA30_DEBUG")) fprintf(stderr,
                     "PRE img=%016I64x gp=%08lX ts=%08lX\n",
@@ -5631,7 +5906,7 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
                                 if (getenv("PA30_DEBUG")) fprintf(stderr, "SEED cli shared\n");
                                 PHASE("cli-pre-start");
                                 pa30_transform_relocs(prepared, sourceLen, rt, rn,
-                                    oldBase, peImageBase, sizeOfImage);
+                                    oldBase, peImageBase);
                                 PHASE("cli-relocs");
                                 pa30_transform_resources(prepared, sourceLen, rt, rn);
                                 PHASE("cli-resources");
@@ -5731,15 +6006,28 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
                                         rt, rn, &nb);
                             }
                             if (pa30_is_ia64_image(prepared, sourceLen))
+                            {
+                                unsigned char *ia64Hint =
+                                    (unsigned char *)calloc((size_t)sourceLen, 1);
+                                if (ia64Hint)
+                                {
+                                    pa30_mark_nonexe(prepared, sourceLen, ia64Hint);
+                                    pa30_transform_ia64(prepared, sourceLen, rt, rn,
+                                                        ia64Hint, targetGp);
+                                    free(ia64Hint);
+                                    pa30_set_u32(prepared,
+                                        PA30_DD(prepared, lfa + 24) + 8 * 8,
+                                        targetGp);
+                                }
                                 pa30_transform_pdata_amd64(prepared, sourceLen,
                                                            rt, rn, sizeOfImage);
+                            }
                             if (!getenv("PA30_NO_ARM64PORT"))
                                 pa30_transform_arm64(prepared, sourceLen, rt, rn);
                             PHASE("nat-pdata");
                             if (getenv("PA30_DEBUG")) fprintf(stderr, "SEED relocs\n");
                             pa30_transform_relocs(prepared, sourceLen, rt, rn,
-                                oldBase, peImageBase,
-                                sizeOfImage);
+                                oldBase, peImageBase);
                             PHASE("nat-relocs");
                             if (getenv("PA30_DEBUG")) fprintf(stderr, "SEED resources\n");
                             pa30_transform_resources(prepared, sourceLen,
