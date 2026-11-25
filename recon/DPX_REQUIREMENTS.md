@@ -2475,8 +2475,8 @@ Phase D is the genuine open-ended piece.
      ARM `.pdata` records.  The disassembly and pdata passes honor flags 19
      and 20 independently and also run after managed CLI passes.  The pass is
      guarded by `PA30_NO_ARM32PORT=1`.  The I386 relative-call/jump heuristic
-     is skipped for ARM32 images so embedded x86 stubs there are left alone;
-     ARM64 PE32 images retain the existing heuristic required by their packages.
+     now runs only on machine `0x014C`; ARM64 packages contain I386 PE32
+     components that need it, while true ARM64 images are PE32+.
 
      CLI4 selection now follows all four file-type mnemonics (16/32/64/128 for
      I386/AMD64/ARM/ARM64) before metadata and maps are parsed.  The last
@@ -2548,3 +2548,34 @@ Phase D is the genuine open-ended piece.
      also passes `cargo fmt` and Clippy with warnings denied.  The source trees
      remain dual-licensed under MIT or Apache-2.0; their license notices must be
      retained if code is copied.
+
+     **ARM32 hint mask (part 97).**  `RiftTransformDisasmARM` needs the reference
+     `MarkNonExeCli4` hint values, not the shared x86 mask.  The ARM32 pass now
+     builds its own mask: non-executable section bytes 1, PE headers and every
+     data-directory range 3, import descriptors/thunks/names and export text 3,
+     export EAT/name/ordinal arrays 3, and supported relocation sites 1 (bit 0
+     only, so an instruction may still start at a site but stops at any interior
+     hint bit 1).  Previously the native path zeroed the mask except for generic
+     non-executable marks, while the managed path copied the x86 mask with
+     `& ~0x02`, which dropped the required bit 1 from headers, imports and
+     exports.  Both paths now call one builder.
+
+     The I386 E8/E9 relative call/jump passes now require machine `0x014C`.
+     The ARM64 packages that need those passes contain I386 PE32 components;
+     true ARM64 images are PE32+ and never reached this code, so excluding
+     non-I386 PE32 machines matches the reference.
+
+     `test_arm32hint.c` (run by `test_arm32hint.bat`) asserts the mask values on
+     a synthetic ARMNT image with executable import/export text, an export
+     array set, a non-executable `.pdata`, and a HIGHLOW relocation site.
+
+     Regression validation after these changes: KB4539601 IA64 3279/3279,
+     KB5064399 480/480, SSU 228/228, NDP481 ARM64 2124/2124, KB5131083 209/209,
+     KB2959977 513/513 and KB5022508 141/141.  KB5022513 remains 141/161.
+     XPRESS (40), LZX, LZMS (6) and PA19 tests pass.
+
+     ARM32 pass ordering still differs from the reference in the native path:
+     disassembly and `.pdata` run before relocations/imports/resources, while the
+     reference runs them last.  The hint masks make those passes disjoint on
+     every supplied fixture (no relocation site or data-directory range overlaps
+     an ARM function start), so the order was left unchanged.

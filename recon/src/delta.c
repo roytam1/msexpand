@@ -2783,8 +2783,17 @@ static unsigned long pa30_map_rva(const RIFTENTRY *rt, unsigned rn,
  * type-3 (HIGHLOW) and type-10 (DIR64) relocation sites so the inferred
  * pointer rewrite touches only those dwords, not incidental 4-byte windows
  * that happen to look like an image VA. */
+static void pa30_reloc_mask_ex(const unsigned char *buf, unsigned long len,
+                               unsigned char *mask, unsigned char mark);
+
 static void pa30_reloc_mask(const unsigned char *buf, unsigned long len,
                             unsigned char *mask)
+{
+    pa30_reloc_mask_ex(buf, len, mask, 0x03U);
+}
+
+static void pa30_reloc_mask_ex(const unsigned char *buf, unsigned long len,
+                               unsigned char *mask, unsigned char mark)
 {
     unsigned long pe, opt, rrva, rsize, off, end;
     if (len < 0x40) return;
@@ -2816,7 +2825,7 @@ static void pa30_reloc_mask(const unsigned char *buf, unsigned long len,
                                          (type == 10) ? 8 : 2;
                 if (fo != 0xFFFFFFFFUL && fo + width <= len)
                     for (k = 0; k < width; ++k)
-                        mask[fo + k] |= 0x03U;   /* handled + skip in scan */
+                        mask[fo + k] |= mark;   /* handled + skip in scan */
             }
             if (type == 4) ++e;
         }
@@ -2831,8 +2840,17 @@ static void pa30_reloc_mask(const unsigned char *buf, unsigned long len,
  * live there alone.  The DLL also marks each data directory by RVA, but
  * doing so regresses several real deltas, so that part is deliberately
  * left out. */
+static void pa30_mark_nonexe_ex(const unsigned char *buf, unsigned long len,
+                                unsigned char *mask, unsigned char dataMark);
+
 static void pa30_mark_nonexe(const unsigned char *buf, unsigned long len,
                              unsigned char *mask)
+{
+    pa30_mark_nonexe_ex(buf, len, mask, 0x01U);
+}
+
+static void pa30_mark_nonexe_ex(const unsigned char *buf, unsigned long len,
+                                unsigned char *mask, unsigned char dataMark)
 {
     unsigned long pe, opt, nsec, sh, s, k;
     if (len < 0x40) return;
@@ -2888,7 +2906,7 @@ static void pa30_mark_nonexe(const unsigned char *buf, unsigned long len,
                      * lives in an executable section.  In particular, an ILT
                      * RVA can begin with an E8 byte that the byte-wise x86
                      * branch heuristic must not decode as a CALL opcode. */
-                    for (k = d; k < d + 20; ++k) mask[k] |= 0x01U;
+                    for (k = d; k < d + 20; ++k) mask[k] |= dataMark;
                     th[0] = rd32(buf + d);
                     th[1] = rd32(buf + d + 16);
                     for (q = 0; q < 2; ++q)
@@ -2906,14 +2924,14 @@ static void pa30_mark_nonexe(const unsigned char *buf, unsigned long len,
                             if (!v && !hi) break;
                             /* Thunk arrays are data even in executable sections.
                              * IA64 bundles must not be decoded from their RVAs. */
-                            for (k = 0; k < width; ++k) mask[t + k] |= 0x01U;
+                            for (k = 0; k < width; ++k) mask[t + k] |= dataMark;
                             t += width;
                             if (v & 0x80000000UL) continue;
                             no = pa30_rva_off(buf, len, v);
                             if (no == 0xFFFFFFFFUL || no + 2 > len) continue;
                             for (nk = no; nk < len && nk - no < 256 &&
-                                          buf[nk]; ++nk) mask[nk] |= 0x01U;
-                            if (nk < len) mask[nk] |= 0x01U;
+                                          buf[nk]; ++nk) mask[nk] |= dataMark;
+                            if (nk < len) mask[nk] |= dataMark;
                         }
                     }
                 }
@@ -2933,7 +2951,7 @@ static void pa30_mark_nonexe(const unsigned char *buf, unsigned long len,
             {
                 if (es > len - eo) es = len - eo;
                 for (k = 0; k < es; ++k)
-                    mask[eo + k] |= 0x01U;
+                    mask[eo + k] |= dataMark;
             }
         }
     }
@@ -2960,6 +2978,49 @@ static void pa30_mark_data_dirs(const unsigned char *buf, unsigned long len,
         if (size > len - off) size = len - off;
         for (k = 0; k < size; ++k) mask[off + k] |= 0x03U;
     }
+}
+
+static void pa30_mask_bytes(unsigned char *mask, unsigned long len,
+                            unsigned long off, unsigned long count,
+                            unsigned long width, unsigned char mark)
+{
+    unsigned long k;
+    if (off >= len || !width || count > (len - off) / width) return;
+    for (k = 0; k < count * width; ++k)
+        mask[off + k] |= mark;
+}
+
+static void pa30_mark_export_arrays(const unsigned char *buf, unsigned long len,
+                                    unsigned char *mask)
+{
+    unsigned long pe, opt, er, es, eo, nf, nn, af, an, ao;
+    if (len < 0x40) return;
+    pe = rd32(buf + 0x3C);
+    if (pe > len - 24 || memcmp(buf + pe, "PE\0\0", 4)) return;
+    opt = pe + 24;
+    if (!PA30_MAGIC_OK(rd16(buf + opt)) || opt + 0x90 > len) return;
+    er = rd32(buf + PA30_DD(buf, opt));
+    es = rd32(buf + PA30_DD(buf, opt) + 4);
+    if (!er || es < 40) return;
+    eo = pa30_rva_off(buf, len, er);
+    if (eo == 0xFFFFFFFFUL || eo > len || len - eo < 40) return;
+    nf = rd32(buf + eo + 20);
+    nn = rd32(buf + eo + 24);
+    af = rd32(buf + eo + 28);
+    an = rd32(buf + eo + 32);
+    ao = rd32(buf + eo + 36);
+    if (af) pa30_mask_bytes(mask, len, pa30_rva_off(buf, len, af), nf, 4, 3);
+    if (an) pa30_mask_bytes(mask, len, pa30_rva_off(buf, len, an), nn, 4, 3);
+    if (ao) pa30_mask_bytes(mask, len, pa30_rva_off(buf, len, ao), nn, 2, 3);
+}
+
+static void pa30_mark_arm32_hint(const unsigned char *buf, unsigned long len,
+                                 unsigned char *mask)
+{
+    pa30_mark_nonexe_ex(buf, len, mask, 0x03U);
+    pa30_mark_data_dirs(buf, len, mask);
+    pa30_reloc_mask_ex(buf, len, mask, 0x01U);
+    pa30_mark_export_arrays(buf, len, mask);
 }
 
 /* Mirrors the DLL's RiftTransformRelocationsI386Component::
@@ -6309,10 +6370,10 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
                                     pa30_transform_pdata_amd64(prepared, sourceLen,
                                         rt, rn, sizeOfImage);
                                 }
-                                /* ARM32 has its own decoder.  ARM64 PE32 images
-                                 * still require the x86-stub heuristic. */
+                                /* ARM32 has its own decoder.  Only I386 PE32
+                                 * components use the x86-stub heuristic. */
                                 if (rd16(prepared + lfa + 24) == 0x10B &&
-                                     rd16(prepared + lfa + 4) != 0x1C4)
+                                     rd16(prepared + lfa + 4) == 0x014C)
                                 {
                                     int hasRdata = 0;
                                     unsigned short nSect = rd16(prepared + lfa + 6);
@@ -6337,14 +6398,10 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
                                     {
                                         unsigned char *arm32Hint =
                                             (unsigned char *)calloc((size_t)sourceLen, 1);
-                                        unsigned long k;
                                         if (arm32Hint)
                                         {
-                                            if (hintBuf)
-                                                for (k = 0; k < sourceLen; ++k)
-                                                    arm32Hint[k] = hintBuf[k] & ~0x02U;
-                                            else
-                                                pa30_mark_nonexe(prepared, sourceLen, arm32Hint);
+                                            pa30_mark_arm32_hint(prepared, sourceLen,
+                                                                 arm32Hint);
                                             pa30_transform_arm32(prepared, sourceLen, rt, rn,
                                                                  arm32Hint, (unsigned long)oldBase);
                                             free(arm32Hint);
@@ -6420,7 +6477,8 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
                                         (unsigned char *)calloc((size_t)sourceLen, 1);
                                     if (arm32Hint)
                                     {
-                                        pa30_mark_nonexe(prepared, sourceLen, arm32Hint);
+                                        pa30_mark_arm32_hint(prepared, sourceLen,
+                                                             arm32Hint);
                                         pa30_transform_arm32(prepared, sourceLen, rt, rn,
                                                              arm32Hint, (unsigned long)oldBase);
                                         free(arm32Hint);
@@ -6455,18 +6513,18 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
                              * relative-call pass.  This matters when an E9
                              * opcode byte occurs inside an E8 call's rel32:
                              * the jump pass must see the original operand
-                             * before the call pass overwrites it.  ARM32 is
-                             * excluded; ARM64 PE32 keeps this heuristic. */
+                             * before the call pass overwrites it.  Only I386
+                             * PE32 components use this heuristic. */
                             if (getenv("PA30_DEBUG")) fprintf(stderr, "SEED reljmps\n");
                             if (rd16(prepared + lfa + 24) == 0x10B &&
-                                     rd16(prepared + lfa + 4) != 0x1C4)
+                                     rd16(prepared + lfa + 4) == 0x014C)
                             pa30_transform_reljmps(prepared, sourceLen, rt,
                                                    rn, hintBuf, sizeOfImage,
                                                    source);
                             PHASE("nat-reljmps");
                             if (getenv("PA30_DEBUG")) fprintf(stderr, "SEED relcalls\n");
                             if (rd16(prepared + lfa + 24) == 0x10B &&
-                                     rd16(prepared + lfa + 4) != 0x1C4)
+                                     rd16(prepared + lfa + 4) == 0x014C)
                             pa30_transform_relcalls(prepared, sourceLen, rt,
                                                     rn, hintBuf, sizeOfImage);
                             PHASE("nat-relcalls");
