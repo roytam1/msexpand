@@ -74,8 +74,12 @@ needed ??the CAB reader is compiled into the EXE.
   copied and `PA30` deltas are decoded with their basis chains resolved. Real
   PA30 deltas use explicit per-segment code lengths, so the system
   `msdelta.dll` is the default (`PA30_NO_OS=1` forces the native decoder).
-  The native seed pipeline includes the guarded IA64 bundle transform
-  (`PA30_NO_IA64PORT=1` disables it). Staged progress is reported per file for nested CAB extraction, patching and verification, with a short summary. The manifest SHA256 hashes are now really computed for every produced target. Verified on `KB2959977`: all 513 CIX targets match their manifest
+  The native seed pipeline includes guarded IA64 and ARM32 bundle transforms
+  (`PA30_NO_IA64PORT=1` / `PA30_NO_ARM32PORT=1` disable them). Staged
+  progress is reported per file for nested CAB extraction, patching and
+  verification, with a short summary. The manifest SHA256 hashes are now really
+  computed for every produced target. Verified on `KB2959977`: all 513 CIX
+  targets match their manifest
   SHA256 hashes and lengths, as are the 209 targets of `KB5131083`, both
   natively and via OS delegation. Nested packages are walked through their
   packaging descriptors (`toc.xml`, `cabinet.cablist.ini`) so the payload

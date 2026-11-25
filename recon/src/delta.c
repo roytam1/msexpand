@@ -820,6 +820,8 @@ static void e8_untranslate(unsigned char *out, unsigned long outLen)
 static unsigned long rd32(const unsigned char *p);
 static unsigned __int64 rd64(const unsigned char *p);
 static unsigned short rd16(const unsigned char *p);
+static unsigned long pa30_rva_off(const unsigned char *b, unsigned long len,
+                                  unsigned long rva);
 static void pa30_set_u32(unsigned char *b, unsigned long off, unsigned long v);
 
 /* ---------- PA30 PE seed transform ---------------------------------------- */
@@ -2410,13 +2412,14 @@ static void cli_sig_method(const CLIMAP *cm, unsigned char *p,
                            unsigned long n, unsigned long *pos,
                            unsigned depth)
 {
-    unsigned cc, gen = 0, params;
+    unsigned cc, params;
     if (*pos >= n) return;
     cc = p[(*pos)++];
-    if (cc & 0x10)
-        gen = sig_comp(p, n, pos);
+    /* The CLI4 walker does not consume a generic-parameter count for
+     * MethodDef/MemberRef signatures, even when the calling convention has
+     * the generic bit set. */
+    (void)cc;
     params = sig_comp(p, n, pos);
-    (void)gen;
     cli_sig_ret_and_params(cm, p, n, pos, params, depth + 1);
 }
 
@@ -2530,6 +2533,7 @@ static void pa30_transform_cli_blobs(unsigned char *buf, unsigned long len,
         unsigned long pos, blen, start, end;
         unsigned char *p;
         g_voidSeen = 0;
+        g_prevCmod = 0;
 
         if (off >= heapLen) continue;
         pos = base + off;
@@ -3884,6 +3888,256 @@ static int pa30_is_ia64_image(const unsigned char *b, unsigned long len)
     return rd16(b + pe + 4) == 0x0200;
 }
 
+/* ---- ARM32 seed transform (RiftTransformDisasmARM / PdataARM) ---- */
+typedef struct tagARMINSN32
+{
+    unsigned long w[2];
+    long address;
+    int type;                   /* 3 = BL, 4/5 = MOVW+MOVT, 2 = other */
+    unsigned long len;
+} ARMINSN32;
+
+static int pa30_is_arm32_image(const unsigned char *b, unsigned long len)
+{
+    unsigned long pe;
+    if (len < 0x40 || memcmp(b, "MZ", 2)) return 0;
+    pe = rd32(b + 0x3C);
+    if (pe + 24 > len || memcmp(b + pe, "PE\0\0", 4)) return 0;
+    return rd16(b + pe + 4) == 0x1C4;
+}
+
+static unsigned long pa30_arm_mov_get(unsigned long w)
+{
+    unsigned long h0 = w & 0xFFFFUL, h1 = (w >> 16) & 0xFFFFUL;
+    unsigned long v = (h1 & 0xFFUL) | ((h1 >> 4) & 0x700UL) |
+                      2UL * (h0 & 0x400UL);
+    switch (h1 & 0xFUL)
+    {
+    case 0: return v & 0xFFUL;
+    case 1: return v & 0xFF00FFUL;
+    case 2: return v & 0xFF00FF00UL;
+    case 3: return v & 0xFFFFFF00UL;
+    default: return (v & (143UL << (h1 & 0xFUL))) | 0x80UL;
+    }
+}
+
+static unsigned long pa30_arm_mov_address(unsigned long w0, unsigned long w1)
+{
+    unsigned long h0 = w0 & 0xFFFFUL, h1 = (w0 >> 16) & 0xFFFFUL;
+    unsigned long h2 = w1 & 0xFFFFUL, h3 = (w1 >> 16) & 0xFFFFUL;
+    unsigned long t = 2UL * ((h2 & 0x400UL) | (h2 << 11));
+    t |= h3 & 0xFFUL;
+    if ((h0 & 0x3E0UL) == 0x40UL && (h0 & 0xFUL) == 0xFUL)
+    {
+        t = (t << 4) | (h2 & 0x7000UL);
+        return (t << 12) | pa30_arm_mov_get(w0);
+    }
+    t = (t << 4) | (h3 & 0x7000UL);
+    t |= h0 & 0xFUL;
+    t = (t << 11) | (h0 & 0x400UL);
+    t = 2UL * t | ((h1 >> 4) & 0x700UL) | (h1 & 0xFFUL);
+    return t;
+}
+
+static void pa30_arm_set_mov_word(unsigned long *w, unsigned long value)
+{
+    unsigned long old = *w;
+    unsigned long low = (old & 0xFFF0UL) | ((value & 0xFFFFUL) >> 12);
+    unsigned long high = ((old >> 16) & 0x8F00UL) |
+                         ((value & 0x700UL) << 4) | (value & 0xFFUL);
+    low ^= (((value & 0xFFFFUL) >> 1) ^ old) & 0x400UL;
+    *w = (low & 0xFFFFUL) | ((high & 0xFFFFUL) << 16);
+}
+
+static void pa30_arm32_decode(const unsigned char *p, unsigned long avail,
+                              ARMINSN32 *in)
+{
+    unsigned long h0, h1, w0, w1;
+    memset(in, 0, sizeof(*in));
+    in->type = 2;
+    in->len = 2;
+    if (avail < 2) { in->len = avail; return; }
+    h0 = rd16(p);
+    if ((h0 & 0xF800UL) != 0xE800UL && (h0 & 0xF800UL) != 0xF000UL &&
+        (h0 & 0xF800UL) != 0xF800UL) return;
+    in->type = 4;
+    in->len = avail < 4 ? avail : 4;
+    if (avail < 4) return;
+    h1 = rd16(p + 2);
+    w0 = h0 | (h1 << 16);
+    in->w[0] = w0;
+    if ((h0 & 0xF000UL) == 0xF000UL && !(h0 & 0x800UL) &&
+        (h1 & 0xC000UL) == 0xC000UL && (h1 & 0x3800UL) == 0x3800UL)
+    {
+        unsigned long s = (h0 >> 10) & 1;
+        unsigned long j1 = (h1 >> 13) & 1;
+        unsigned long j2 = (h1 >> 11) & 1;
+        unsigned long i1 = (~(j1 ^ s)) & 1;
+        unsigned long i2 = (~(j2 ^ s)) & 1;
+        unsigned long imm = (s << 24) | (i1 << 23) | (i2 << 22) |
+                            ((h0 & 0x3FFUL) << 12) | ((h1 & 0x7FFUL) << 1);
+        in->type = 3;
+        in->address = (imm & 0x1000000UL)
+                    ? (long)(imm | 0xFF000000UL) : (long)imm;
+        return;
+    }
+    if (avail < 8) return;
+    w1 = rd32(p + 4);
+    in->w[1] = w1;
+    if ((h0 & 0xF800UL) == 0xF000UL && (h0 & 0x3F0UL) == 0x240UL &&
+        !(h1 & 0x8000UL) && ((w1 & 0xFFFFUL) & 0xF800UL) == 0xF000UL &&
+        ((w1 & 0xFFFFUL) & 0x3F0UL) == 0x2C0UL &&
+        !(((w1 >> 16) & 0xFFFFUL) & 0x8000UL))
+    {
+        in->type = 5;
+        in->len = 8;
+        in->address = (long)pa30_arm_mov_address(w0, w1);
+    }
+}
+
+static void pa30_arm32_update_bl(unsigned long *w, long value)
+{
+    unsigned long h0 = *w & 0xFFFFUL, h1 = (*w >> 16) & 0xFFFFUL;
+    unsigned long s = ((unsigned long)value >> 24) & 1;
+    unsigned long i1 = ((unsigned long)value >> 23) & 1;
+    unsigned long i2 = ((unsigned long)value >> 22) & 1;
+    unsigned long j1 = (~(i1 ^ s)) & 1;
+    unsigned long j2 = (~(i2 ^ s)) & 1;
+    h0 = (h0 & 0xF800UL) | (s << 10) |
+         (((unsigned long)value >> 12) & 0x3FFUL);
+    h1 = (h1 & 0xD000UL) | (j1 << 13) | (j2 << 11) |
+         (((unsigned long)value >> 1) & 0x7FFUL);
+    *w = (h1 << 16) | h0;
+}
+
+static void pa30_transform_arm32(unsigned char *buf, unsigned long len,
+                                 const RIFTENTRY *rt, unsigned rn,
+                                 const unsigned char *hint,
+                                 unsigned long imageBase)
+{
+    unsigned long pe, opt, sh, nsec, s;
+    unsigned long pdRva = 0, pdSize = 0, off = 0, end = 0, i;
+    if (!pa30_is_arm32_image(buf, len)) return;
+    if (getenv("PA30_NO_ARM32PORT")) return;
+    pe = rd32(buf + 0x3C);
+    opt = pe + 24;
+    if (opt + 0x90 > len || !PA30_MAGIC_OK(rd16(buf + opt))) return;
+    sh = opt + rd16(buf + pe + 20);
+    nsec = rd16(buf + pe + 6);
+    pdRva = rd32(buf + PA30_DD(buf, opt) + 3 * 8);
+    pdSize = rd32(buf + PA30_DD(buf, opt) + 3 * 8 + 4);
+    if (!pdRva || !pdSize) return;
+    for (s = 0; s < nsec && sh + 40 <= len; ++s, sh += 40)
+    {
+        unsigned long va = rd32(buf + sh + 12);
+        unsigned long vs = rd32(buf + sh + 8);
+        unsigned long raw = rd32(buf + sh + 20);
+        unsigned long rs = rd32(buf + sh + 16);
+        if (va <= pdRva && pdRva < va + (vs > rs ? vs : rs))
+        {
+            off = raw + (pdRva - va);
+            if (off > len) return;
+            end = off + pdSize;
+            if (end > len) end = len;
+            break;
+        }
+        off = end = 0;
+    }
+    if (!off || end <= off) return;
+    for (i = 0; i + 8 <= end - off; i += 8)
+    {
+        unsigned long begin = rd32(buf + off + i);
+        unsigned long unwind = rd32(buf + off + i + 4);
+        unsigned long flen, start = 0xFFFFFFFFUL, limit, p, rva;
+        if (!begin) continue;
+        if (unwind & 3) flen = 2UL * ((unwind >> 2) & 0x7FFUL);
+        else
+        {
+            unsigned long uo = pa30_rva_off(buf, len, unwind);
+            if (uo == 0xFFFFFFFFUL || uo + 4 > len) continue;
+            flen = 2UL * (rd32(buf + uo) & 0x3FFFFUL);
+        }
+        if (!flen) continue;
+        for (s = 0, sh = opt + rd16(buf + pe + 20);
+             s < nsec && sh + 40 <= len; ++s, sh += 40)
+        {
+            unsigned long va = rd32(buf + sh + 12);
+            unsigned long vs = rd32(buf + sh + 8);
+            unsigned long raw = rd32(buf + sh + 20);
+            unsigned long rs = rd32(buf + sh + 16);
+            if (va <= begin && begin < va + vs)
+            {
+                unsigned long delta = begin - va;
+                if (delta <= rs && flen <= rs - delta && raw <= len &&
+                    delta <= len - raw && flen <= len - raw - delta)
+                    start = raw + delta;
+                break;
+            }
+        }
+        if (start == 0xFFFFFFFFUL || start == 0 || start >= len) continue;
+        --start;
+        rva = begin - 1;
+        limit = start + flen;
+        if (limit > len) limit = len;
+        for (p = start; p + 2 <= limit; )
+        {
+            ARMINSN32 in;
+            unsigned long k, skip = 0;
+            if (hint && p + 1 < len && (hint[p + 1] & 3))
+            { p += 2; rva += 2; continue; }
+            pa30_arm32_decode(buf + p, limit - p, &in);
+            if (in.len < 2) break;
+            for (k = 1; k < in.len; ++k)
+                if (hint && p + 1 + k < len && (hint[p + 1 + k] & 2))
+                { skip = k; break; }
+            if (skip) { p += skip; rva += skip; continue; }
+            if (in.type == 3)
+            {
+                long site = (long)rva + 4;
+                long target = site + in.address;
+                if (target >= 0)
+                {
+                    long mappedSite = (long)pa30_map_rva(rt, rn, (unsigned long)site);
+                    long mappedTarget = (long)pa30_map_rva(rt, rn, (unsigned long)target);
+                    pa30_arm32_update_bl(&in.w[0], mappedTarget - mappedSite);
+                    pa30_set_u32(buf, p, in.w[0]);
+                }
+            }
+            else if (in.type == 5)
+            {
+                unsigned long mapped = pa30_map_rva(rt, rn,
+                    (unsigned long)(in.address - (long)imageBase)) + imageBase;
+                pa30_arm_set_mov_word(&in.w[0], mapped);
+                pa30_arm_set_mov_word(&in.w[1], mapped >> 16);
+                pa30_set_u32(buf, p, in.w[0]);
+                pa30_set_u32(buf, p + 4, in.w[1]);
+            }
+            p += in.len;
+            rva += in.len;
+        }
+    }
+}
+
+static void pa30_transform_pdata_arm32(unsigned char *buf, unsigned long len,
+                                       const RIFTENTRY *rt, unsigned rn)
+{
+    unsigned long pe, opt, dd, rva, size, off, end, i;
+    if (!pa30_is_arm32_image(buf, len)) return;
+    pe = rd32(buf + 0x3C);
+    opt = pe + 24;
+    dd = PA30_DD(buf, opt);
+    rva = rd32(buf + dd + 3 * 8);
+    size = rd32(buf + dd + 3 * 8 + 4);
+    if (!rva || size < 8) return;
+    off = pa30_rva_off(buf, len, rva);
+    if (off == 0xFFFFFFFFUL || off > len) return;
+    end = off + size;
+    if (end > len) end = len;
+    for (i = 0; i + 8 <= end - off; i += 8)
+        pa30_set_u32(buf, off + i,
+                     pa30_map_rva(rt, rn, rd32(buf + off + i)));
+}
+
 static void pa30_transform_amd64_rip(unsigned char *buf, unsigned long len,
                                      const RIFTENTRY *rt, unsigned rn,
                                      unsigned long sizeOfImage,
@@ -4219,6 +4473,7 @@ typedef struct tagRELOC
     unsigned long rva;
     unsigned short type;
     unsigned short extra;
+    unsigned long order;
 } RELOC;
 
 static int cmp_reloc(const void *x, const void *y)
@@ -4226,6 +4481,8 @@ static int cmp_reloc(const void *x, const void *y)
     const RELOC *a = (const RELOC *)x, *b = (const RELOC *)y;
     if (a->rva < b->rva) return -1;
     if (a->rva > b->rva) return 1;
+    if (a->order < b->order) return -1;
+    if (a->order > b->order) return 1;
     return 0;
 }
 
@@ -4625,6 +4882,7 @@ static void pa30_transform_relocs(unsigned char *buf, unsigned long len,
                            type == 4 || type == 10) ? (unsigned short)type : 0;
             rel[n].extra = (type == 4 && e + 4 <= bsize)
                          ? rd16(buf + off + e + 2) : 0;
+            rel[n].order = n;
             if (type == 4) ++e;
             ++n;
         }
@@ -5942,7 +6200,8 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
                                     pa30_transform_pdata_amd64(prepared, sourceLen,
                                         rt, rn, sizeOfImage);
                                 }
-                                if (rd16(prepared + lfa + 24) == 0x10B)
+                                if (rd16(prepared + lfa + 24) == 0x10B &&
+                                     rd16(prepared + lfa + 4) != 0x1C4)
                                 {
                                     int hasRdata = 0;
                                     unsigned short nSect = rd16(prepared + lfa + 6);
@@ -5987,23 +6246,46 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
                              * metadata, a managed source image still needs
                              * its metadata RVA cells remapped; the DLL runs
                              * this pass for E8-translated deltas too.  A
-                             * source whose #~ stream fails validation is
-                             * treated as CLI-less by cli_meta_from_pe and
-                             * skips the pass. */
+                             * ARM32 source rejected under the ordinary schema
+                             * is retried under the CLI4 table layout; it is
+                             * kept only when that layout fits the declared #~
+                             * stream. */
                             if (!getenv("PA30_SKIPSRCCLI"))
                             {
                                 CLIMETA nc;
                                 static CLIBLOBSET nb;
+                                int oldCli4 = g_cli4;
+                                unsigned long need;
+                                unsigned t;
                                 memset(&nc, 0, sizeof(nc));
                                 memset(&nb, 0, sizeof(nb));
                                 cli_meta_from_pe(&nc, source, sourceLen);
                                 cli_meta_derive(&nc);
                                 if (nc.empty && cli_meta_needs_scan(source, sourceLen))
                                     cli_meta_from_scan(&nc, source, sourceLen);
+                                if (nc.empty && !g_cli4 &&
+                                    pa30_is_arm32_image(source, sourceLen))
+                                {
+                                    g_cli4 = 1;
+                                    cli_meta_from_pe(&nc, source, sourceLen);
+                                    if (!nc.empty)
+                                    {
+                                        need = 24 + 4 * cli_popcount64(nc.mask);
+                                        for (t = 0; t < 64; ++t)
+                                            need += nc.stride[t] * nc.rows[t];
+                                        if (!nc.tablesOff || need > nc.tablesLen)
+                                        {
+                                            memset(&nc, 0, sizeof(nc));
+                                            nc.empty = 1;
+                                        }
+                                    }
+                                    if (nc.empty) g_cli4 = oldCli4;
+                                }
                                 if (!nc.empty)
                                     pa30_transform_cli_metadata(prepared,
                                         sourceLen, &nc, &cliTgt, &cliMap,
                                         rt, rn, &nb);
+                                g_cli4 = oldCli4;
                             }
                             if (pa30_is_ia64_image(prepared, sourceLen))
                             {
@@ -6021,6 +6303,19 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
                                 }
                                 pa30_transform_pdata_amd64(prepared, sourceLen,
                                                            rt, rn, sizeOfImage);
+                            }
+                            if (pa30_is_arm32_image(prepared, sourceLen))
+                            {
+                                unsigned char *arm32Hint =
+                                    (unsigned char *)calloc((size_t)sourceLen, 1);
+                                if (arm32Hint)
+                                {
+                                    pa30_mark_nonexe(prepared, sourceLen, arm32Hint);
+                                    pa30_transform_arm32(prepared, sourceLen, rt, rn,
+                                                         arm32Hint, (unsigned long)oldBase);
+                                    free(arm32Hint);
+                                }
+                                pa30_transform_pdata_arm32(prepared, sourceLen, rt, rn);
                             }
                             if (!getenv("PA30_NO_ARM64PORT"))
                                 pa30_transform_arm64(prepared, sourceLen, rt, rn);
@@ -6050,13 +6345,15 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
                              * the jump pass must see the original operand
                              * before the call pass overwrites it. */
                             if (getenv("PA30_DEBUG")) fprintf(stderr, "SEED reljmps\n");
-                            if (rd16(prepared + lfa + 24) == 0x10B)
+                            if (rd16(prepared + lfa + 24) == 0x10B &&
+                                     rd16(prepared + lfa + 4) != 0x1C4)
                             pa30_transform_reljmps(prepared, sourceLen, rt,
                                                    rn, hintBuf, sizeOfImage,
                                                    source);
                             PHASE("nat-reljmps");
                             if (getenv("PA30_DEBUG")) fprintf(stderr, "SEED relcalls\n");
-                            if (rd16(prepared + lfa + 24) == 0x10B)
+                            if (rd16(prepared + lfa + 24) == 0x10B &&
+                                     rd16(prepared + lfa + 4) != 0x1C4)
                             pa30_transform_relcalls(prepared, sourceLen, rt,
                                                     rn, hintBuf, sizeOfImage);
                             PHASE("nat-relcalls");

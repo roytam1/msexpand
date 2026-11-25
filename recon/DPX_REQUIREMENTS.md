@@ -2467,3 +2467,24 @@ Phase D is the genuine open-ended piece.
      pass remains guarded by `PA30_NO_IA64PORT=1`.  Native regressions rerun
      after the port: KB5064399 480/480, SSU 228/228, NDP481 arm64 2124/2124,
      KB5131083 209/209, KB2959977 513/513 and KB5022508 127/141.
+
+     **ARM32 and final KB5022508 gaps (part 94).**  Ported
+     `RiftTransformDisasmARM` and `RiftTransformPdataARM`, including Thumb BL
+     and MOVW/MOVT address updates, the DLL's packed `arm_instr` bit layout,
+     function-length decoding, shifted Thumb/hint alignment, and the 8-byte
+     ARM `.pdata` records.  The pass is guarded by `PA30_NO_ARM32PORT=1`.
+     The I386 relative-call/jump heuristic is skipped for ARM32 images so
+     embedded x86 stubs there are left alone; ARM64 PE32 images retain the
+     existing heuristic required by their packages.
+
+     The last KB5022508 roots were blob 11 plus blobs 12, 16, 23 and 35.  Blob
+     11 needed an ARM32-only CLI4 source-metadata layout fallback.  Blobs 4
+     and 31 were generic MethodDef/MemberRef signatures: the reference walker
+     ignores the generic calling-convention bit and reads the parameter count
+     immediately, while the native walker consumed an extra count and remapped
+     tokens the DLL leaves untouched.  Blobs 12/16/23/35 then required the
+     ARM32 port.
+     Finally, equal-RVA relocation entries are sorted by original sequence,
+     matching the DLL's stable radix sort; `qsort` alone could swap zero
+     padding with real entries and change two copied bytes.  Native
+     KB5022508 now patches and verifies **141/141**.
