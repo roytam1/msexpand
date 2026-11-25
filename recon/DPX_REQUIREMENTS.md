@@ -2606,3 +2606,14 @@ Phase D is the genuine open-ended piece.
       228/228, NDP481 ARM64 2124/2124, NDP481 x64 2732/2732, KB5131083 209/209,
       KB2959977 513/513, KB5022508 141/141.  XPRESS (40), LZX, LZMS (6), PA19
       and the ARM32 hint-mask unit test all pass.
+
+      **Generated-input differential (part 99).**  Fed 42 deterministic jlevere
+      `create ... raw` deltas (empty, 1-byte, 17-byte, 255-byte, 4 KB, 16 KB and
+      64 KB sources with identity, edited, truncated, extended, repeated and
+      shifted targets) through native, jlevere and napbat.  Native output is
+      byte-exact on all 35 cases with a non-empty target, and jlevere/napbat
+      agree on all 42.  The seven remaining cases have `targetSize == 0`; the
+      Rust decoders return an empty output, while both the native decoder and
+      the Windows `msdelta.dll` (`ApplyDeltaA`) reject them.  This is Rust-side
+      permissiveness, not a native regression, so the existing nonzero-target
+      guard stays.

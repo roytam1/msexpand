@@ -46,4 +46,6 @@ python compare.py source.bin delta.bin expected.bin
 
 The script runs the native C decoder, napbat, and jlevere. It reports unsupported Rust features as `SKIP`. Compare the helper output with `recon\obj\test_delta.exe` or with a manifest SHA256. Treat unsupported-engine errors as coverage gaps, not as native decoder failures.
 
+A generated delta whose target is empty is accepted by both Rust engines but rejected by the native decoder and by Windows `msdelta.dll`; judge that case against the OS oracle before changing the C decoder.
+
 The source crates are dual-licensed under MIT or Apache-2.0. Keep their license notices if code is copied. Do not vendor Microsoft fixture files that forbid redistribution.
