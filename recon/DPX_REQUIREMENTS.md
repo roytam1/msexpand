@@ -2528,3 +2528,23 @@ Phase D is the genuine open-ended piece.
      KB5022508 141/141.  XPRESS (40), LZX, LZMS (6) and PA19 native/OS-oracle
      tests also pass.  KB5022513 remains at its pre-existing HEAD result of
      141/161; it is not changed by this work.
+
+     **Rust differential oracles (part 96).**  Added `diag/rust-oracle` as a
+     diagnostic-only bridge to the local `napbat-msdelta` and `jlevere-msdelta`
+     trees.  The production MSVC6 build does not depend on Rust.  A portable
+     `x86_64-pc-windows-gnu` toolchain was installed under
+     `%TEMP%\opencode\rust-portable`; no system PATH or registry setting changed.
+
+     The bridge has two Cargo packages and lockfiles because both source trees
+     declare `msdelta` version `0.1.0`.  `msdelta-napbat` applies PA30/PA31.
+     `msdelta-jlevere` applies deltas, creates raw/auto/PA31/BsDiff test deltas,
+     and creates reverse deltas.  `compare.py` runs the native C decoder and
+     both Rust engines against one expected file.  It reports unsupported Rust
+     features as `SKIP`.
+
+     Validation passed for the d0/d1 PA30 vectors, the x86 blob 61 PE delta, the
+     classic-CLI blob 1503 delta, generated PA30/PA31/BsDiff deltas, and a
+     reverse-delta round trip.  Both upstream Rust test suites pass.  The helper
+     also passes `cargo fmt` and Clippy with warnings denied.  The source trees
+     remain dual-licensed under MIT or Apache-2.0; their license notices must be
+     retained if code is copied.

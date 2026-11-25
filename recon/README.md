@@ -41,6 +41,7 @@ needed ??the CAB reader is compiled into the EXE.
 | `test_lzms.c` / `test_lzms.bat` | Generates vectors with the OS compressor and runs the LZMS tests |
 | `test_xpress.c` / `test_xpress.bat` | Runs the 40 go-ntfs XPRESS vectors |
 | `test_sfx.bat` | Unpacks the IE6 SP1 hotfix SFX natively and compares all patched binaries with the SFX-run outputs |
+| `diag/rust-oracle` | Optional Rust differential decoders, PA30/PA31 test-delta creation, and reverse-delta checks |
 
 ## What is implemented
 
