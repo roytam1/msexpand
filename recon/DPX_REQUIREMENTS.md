@@ -2472,14 +2472,16 @@ Phase D is the genuine open-ended piece.
      `RiftTransformDisasmARM` and `RiftTransformPdataARM`, including Thumb BL
      and MOVW/MOVT address updates, the DLL's packed `arm_instr` bit layout,
      function-length decoding, shifted Thumb/hint alignment, and the 8-byte
-     ARM `.pdata` records.  The pass is guarded by `PA30_NO_ARM32PORT=1`.
-     The I386 relative-call/jump heuristic is skipped for ARM32 images so
-     embedded x86 stubs there are left alone; ARM64 PE32 images retain the
-     existing heuristic required by their packages.
+     ARM `.pdata` records.  The disassembly and pdata passes honor flags 19
+     and 20 independently and also run after managed CLI passes.  The pass is
+     guarded by `PA30_NO_ARM32PORT=1`.  The I386 relative-call/jump heuristic
+     is skipped for ARM32 images so embedded x86 stubs there are left alone;
+     ARM64 PE32 images retain the existing heuristic required by their packages.
 
-     The last KB5022508 roots were blob 11 plus blobs 12, 16, 23 and 35.  Blob
-     11 needed an ARM32-only CLI4 source-metadata layout fallback.  Blobs 4
-     and 31 were generic MethodDef/MemberRef signatures: the reference walker
+     CLI4 selection now follows all four file-type mnemonics (16/32/64/128 for
+     I386/AMD64/ARM/ARM64) before metadata and maps are parsed.  The last
+     KB5022508 roots were blob 11 plus blobs 12, 16, 23 and 35.  Blobs 4 and 31
+     were generic MethodDef/MemberRef signatures: the reference walker
      ignores the generic calling-convention bit and reads the parameter count
      immediately, while the native walker consumed an extra count and remapped
      tokens the DLL leaves untouched.  Blobs 12/16/23/35 then required the
