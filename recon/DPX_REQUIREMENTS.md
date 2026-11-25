@@ -2571,11 +2571,38 @@ Phase D is the genuine open-ended piece.
 
      Regression validation after these changes: KB4539601 IA64 3279/3279,
      KB5064399 480/480, SSU 228/228, NDP481 ARM64 2124/2124, KB5131083 209/209,
-     KB2959977 513/513 and KB5022508 141/141.  KB5022513 remains 141/161.
-     XPRESS (40), LZX, LZMS (6) and PA19 tests pass.
+     KB2959977 513/513 and KB5022508 141/141.  KB5022513 was still 141/161 at
+     this point; part 98 fixes the remaining 20 files.  XPRESS (40), LZX, LZMS
+     (6) and PA19 tests pass.
 
      ARM32 pass ordering still differs from the reference in the native path:
      disassembly and `.pdata` run before relocations/imports/resources, while the
      reference runs them last.  The hint masks make those passes disjoint on
      every supplied fixture (no relocation site or data-directory range overlaps
      an ARM function start), so the order was left unchanged.
+
+      **Dynamic rift composition (part 98).**  `DeltaApply` composed the offset
+      rift through four fixed 2048-entry arrays and `rift_reverse` used a fixed
+      16384-dword scratch list.  Large managed images blow through both: the
+      first failing KB5022513 delta (`mscorlib.ni.dll`, basis `mscorlib.dll`)
+      carries a 11609-entry compression rift and a 18342-entry CLI map.  The
+      composition silently stopped at 2048 entries, so the decompressor saw a
+      truncated offset rift and failed with a negative source copy position
+      (`DECOMP riftfail`).  The rift algebra now writes into a growable
+      `RIFTBUILD` vector (doubling capacity, bounded at 4M entries) and
+      `rift_reverse` allocates its pending-entry scratch from the input size.
+      The final vector is handed to the decompressor directly instead of being
+      copied into another fixed array.
+
+      A census through the live apply path (2353 PA30 applications across the
+      baseline packages) found the patch blob's own RiftTable empty in every
+      case, so the existing "consume but ignore" handling is unchanged.  Rust
+      fixtures likewise record an empty patch rift; merging one is inert for
+      all known Windows deltas.
+
+      This closes the long-standing KB5022513 gap: **161/161** patching and
+      verification, byte-exact including `mscorlib.ni.dll`.  Full regression
+      after the change: KB4539601 IA64 3279/3279, KB5064399 480/480, SSU
+      228/228, NDP481 ARM64 2124/2124, NDP481 x64 2732/2732, KB5131083 209/209,
+      KB2959977 513/513, KB5022508 141/141.  XPRESS (40), LZX, LZMS (6), PA19
+      and the ARM32 hint-mask unit test all pass.

@@ -872,15 +872,79 @@ static int rift_cmp(const void *a, const void *b)
     return 0;
 }
 
+/* Growable RIFTENTRY vector used by the rift algebra.  Managed images carry
+ * compressed rift tables with tens of thousands of entries and the composed
+ * tables are larger still (mscorlib.ni.dll in KB5022513 has 11609 source
+ * entries and a 18342-entry CLI map), so fixed arrays cannot hold them. */
+typedef struct tagRIFTBUILD
+{
+    RIFTENTRY *p;
+    unsigned n;
+    unsigned cap;
+} RIFTBUILD;
+
+#define RIFTBUILD_MAX 0x00400000UL    /* 4M entries / 64 MB */
+
+static int riftb_reserve(RIFTBUILD *b, unsigned extra)
+{
+    unsigned need = b->n + extra;
+    if (need < b->n || need > RIFTBUILD_MAX)
+        return -1;
+    if (need > b->cap)
+    {
+        unsigned cap = b->cap ? b->cap : 256;
+        RIFTENTRY *q;
+        while (cap < need)
+            cap <<= 1;
+        if (cap > RIFTBUILD_MAX)
+            cap = RIFTBUILD_MAX;
+        q = (RIFTENTRY *)realloc(b->p, (size_t)cap * sizeof(*q));
+        if (!q)
+            return -1;
+        b->p = q;
+        b->cap = cap;
+    }
+    return 0;
+}
+
+static int riftb_add(RIFTBUILD *b, __int64 left, __int64 right)
+{
+    if (riftb_reserve(b, 1) != 0)
+        return -1;
+    b->p[b->n].left = left;
+    b->p[b->n].right = right;
+    ++b->n;
+    return 0;
+}
+
+static int riftb_append(RIFTBUILD *b, const RIFTENTRY *src, unsigned n)
+{
+    unsigned i;
+    if (!n)
+        return 0;
+    if (riftb_reserve(b, n) != 0)
+        return -1;
+    for (i = 0; i < n; ++i)
+        b->p[b->n + i] = src[i];
+    b->n += n;
+    return 0;
+}
+
+static void riftb_free(RIFTBUILD *b)
+{
+    free(b->p);
+    b->p = NULL;
+    b->n = b->cap = 0;
+}
+
 /* Invert a RiftTable: Map^-1(y) = y - (right-left) = y + (left-right).
  * Faithful port of compo::RiftTable::Reverse (msdelta.dll.c:23595-23950)
  * with a2 = a3 = 0: it sweeps the input, emitting the swapped entries plus
  * extra (x, x - rift) entries for breakpoints that fall inside a rift
  * interval, keeping a pending-entry work list in `temp`. */
-static unsigned rift_reverse(const RIFTENTRY *a, unsigned an, RIFTENTRY *out)
+static int rift_reverse(const RIFTENTRY *a, unsigned an, RIFTBUILD *out)
 {
-    unsigned temp[16384];           /* 4 dwords per pending entry */
-    unsigned on = 0;
+    unsigned *temp;                 /* 4 dwords per pending entry */
     unsigned v13, v14, v16, v18, v22, v24, v27, v28, v32, v34, v38, v41, v43, v47, v48, v51, v63, v65;
     __int64 v19;
     __int64 startPos = 0;
@@ -888,25 +952,22 @@ static unsigned rift_reverse(const RIFTENTRY *a, unsigned an, RIFTENTRY *out)
     if (an == 0) return 0;
 
     if (an == 1)
-    {
-        out[on].left = startPos;
-        out[on].right = startPos + (a[0].right - a[0].left);
-        return 1;
-    }
+        return riftb_add(out, startPos,
+                         startPos + (a[0].right - a[0].left));
     {
         unsigned k;
         int allsame = 1;
         for (k = 1; k < an; ++k)
             if (a[k].left != a[0].left) { allsame = 0; break; }
         if (allsame)
-        {
-            out[on].left = startPos;
-            out[on].right = startPos + (a[0].right - a[0].left);
-            return 1;
-        }
+            return riftb_add(out, startPos,
+                             startPos + (a[0].right - a[0].left));
     }
-
-    memset(temp, 0, sizeof(temp));
+    /* v65 grows by at most one per swept input entry, and each pending
+     * entry occupies four dwords.  The old fixed 16384-dword scratch array
+     * overflowed on large managed deltas. */
+    temp = (unsigned *)calloc((size_t)4 * (an + 2), sizeof(*temp));
+    if (!temp) return -1;
     v65 = 0;
     v14 = an;
 
@@ -990,9 +1051,7 @@ static unsigned rift_reverse(const RIFTENTRY *a, unsigned an, RIFTENTRY *out)
                 if (v22 == v24)
                 {
 LABEL_61:
-                    out[on].left = cursor;
-                    out[on].right = startPos;
-                    ++on;
+                    if (riftb_add(out, cursor, startPos) != 0) { free(temp); return -1; }
                 }
                 else
                 {
@@ -1003,9 +1062,7 @@ LABEL_61:
                     }
                     else
                     {
-                        out[on].left = cursor;
-                        out[on].right = startPos;
-                        ++on;
+                        if (riftb_add(out, cursor, startPos) != 0) { free(temp); return -1; }
                         v26 = v49;
                     }
                     v27 = v63 - 1;
@@ -1014,9 +1071,7 @@ LABEL_61:
                         __int64 *v29 = (__int64 *)(v26 + 2);
                         v28 = v27 - v22;
                         do {
-                            out[on].left = *v29;
-                            out[on].right = *v29 - v19;
-                            ++on;
+                            if (riftb_add(out, *v29, *v29 - v19) != 0) { free(temp); return -1; }
                             v29 += 2;
                             --v28;
                         } while (v28);
@@ -1034,9 +1089,7 @@ LABEL_61:
                         }
                         else
                         {
-                            out[on].left = tl;
-                            out[on].right = tl - v19;
-                            ++on;
+                            if (riftb_add(out, tl, tl - v19) != 0) { free(temp); return -1; }
                         }
                     }
                     v24 = v63;
@@ -1117,7 +1170,8 @@ LABEL_74:
         }
         break;
     }
-    return on;
+    free(temp);
+    return 0;
 }
 
 /* RiftTable::GetRift: return the rift of the entry with the largest
@@ -1156,14 +1210,14 @@ static __int64 rift_get_rift(const RIFTENTRY *t, unsigned n, __int64 pos,
  * The sentinel block emits the entries below a[0].left; the main loop walks
  * each A interval, emitting the mapped breakpoint and every B breakpoint that
  * falls inside it. */
-static unsigned rift_multiply(const RIFTENTRY *a, unsigned an,
-                              const RIFTENTRY *b, unsigned bn,
-                              RIFTENTRY *out)
+static int rift_multiply(const RIFTENTRY *a, unsigned an,
+                         const RIFTENTRY *b, unsigned bn,
+                         RIFTBUILD *out)
 {
-    unsigned on = 0, i;
+    unsigned i;
 
-    if (!an) { if (bn) memcpy(out, b, (size_t)bn * sizeof(*out)); return bn; }
-    if (!bn) { memcpy(out, a, (size_t)an * sizeof(*out)); return an; }
+    if (!an) return riftb_append(out, b, bn);
+    if (!bn) return riftb_append(out, a, an);
 
     /* Sentinel block (msdelta.dll.c:24042-24087 / asm 0x1002F38C-0x1002F46C):
      * emits the entries below a[0].left by walking B's breakpoints. */
@@ -1174,22 +1228,18 @@ static unsigned rift_multiply(const RIFTENTRY *a, unsigned an,
         __int64 endB, rift, acc, d, endA = a[0].left - 1;
 
         rift = rift_get_rift(b, bn, x, &endB);
-        out[on].left = INT64_MIN;
-        out[on].right = x + rift;
-        ++on;
+        if (riftb_add(out, INT64_MIN, x + rift) != 0) return -1;
         acc = INT64_MIN;
         d = endB - x;
         if ((unsigned __int64)(endA + INT64_MIN) > (unsigned __int64)d)
         {
-            while (on < 2048)
+            for (;;)
             {
                 __int64 pos;
                 acc += d + 1;
                 pos = endB + 1;
                 rift = rift_get_rift(b, bn, pos, &endB);
-                out[on].left = acc;
-                out[on].right = pos + rift;
-                ++on;
+                if (riftb_add(out, acc, pos + rift) != 0) return -1;
                 d = endB - pos;
                 if ((unsigned __int64)(endA - acc) <= (unsigned __int64)d)
                     break;
@@ -1211,40 +1261,35 @@ static unsigned rift_multiply(const RIFTENTRY *a, unsigned an,
             end_i = a[i + 1].left - 1;
 
         rift = rift_get_rift(b, bn, right_i, &endB);
-        out[on].left = left_i;
-        out[on].right = right_i + rift;
-        ++on;
+        if (riftb_add(out, left_i, right_i + rift) != 0) return -1;
 
         prevLeft = left_i;
         prevPos = right_i;
         prevEnd = endB;
-        while (on < 2048 &&
-               (unsigned __int64)(end_i - prevLeft) >
+        while ((unsigned __int64)(end_i - prevLeft) >
                (unsigned __int64)(prevEnd - prevPos))
         {
             __int64 nl = prevLeft + (prevEnd - prevPos) + 1;
             __int64 np = prevEnd + 1;
             __int64 ne, r2 = rift_get_rift(b, bn, np, &ne);
-            out[on].left = nl;
-            out[on].right = np + r2;
-            ++on;
+            if (riftb_add(out, nl, np + r2) != 0) return -1;
             prevLeft = nl;
             prevPos = np;
             prevEnd = ne;
         }
     }
 
-    qsort(out, on, sizeof(*out), rift_cmp);
+    qsort(out->p, out->n, sizeof(*out->p), rift_cmp);
     {
         unsigned k = 0;
-        for (i = 1; i < on; ++i)
+        for (i = 1; i < out->n; ++i)
         {
-            if (out[i].left == out[k].left) out[k].right = out[i].right;
-            else out[++k] = out[i];
+            if (out->p[i].left == out->p[k].left) out->p[k].right = out->p[i].right;
+            else out->p[++k] = out->p[i];
         }
-        on = k + 1;
+        out->n = k + 1;
     }
-    return on;
+    return 0;
 }
 
 /* ---------- CLI metadata and the compression rift it induces ------------
@@ -6002,8 +6047,10 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
          *   t3  = {srcLen -> 0} * t2r   (shift into combined-buffer space)
          * then keep the positive-left entries, dropping repeated rifts. */
         {
-            RIFTENTRY t0[64], t1[2048], t2[2048], t2r[2048], t3[2048];
-            unsigned n0 = 0, n1, n2, n2r, n3;
+            RIFTENTRY t0[64];
+            RIFTBUILD t1 = { NULL, 0, 0 }, t2 = { NULL, 0, 0 };
+            RIFTBUILD t2r = { NULL, 0, 0 }, t3 = { NULL, 0, 0 };
+            unsigned n0 = 0;
             unsigned long lfa0;
             if (sourceLen >= 0x40)
             {
@@ -6039,65 +6086,62 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
                  * missing table as identity, so the source PE section map
                  * alone still yields the DLL's offset rift (needed by
                  * deltas such as globalinstallorder.xml). */
-                n1 = rift_multiply(t0, n0, rt, rn, t1);
-                n2 = rift_multiply(t1, n1, tmp, tmpN, t2);
-                if (getenv("PA30_DEBUG"))
+                if (rift_multiply(t0, n0, rt, rn, &t1) != 0 ||
+                    rift_multiply(t1.p, t1.n, tmp, tmpN, &t2) != 0 ||
+                    rift_reverse(t2.p, t2.n, &t2r) != 0)
+                    rc = -1;
+                else
                 {
-                    unsigned q;
-                    fprintf(stderr, "T1 n=%u:", n1);
-                    for (q = 0; q < n1 && q < 10; ++q)
-                        fprintf(stderr, " (%I64d->%I64d)", t1[q].left, t1[q].right);
-                    fprintf(stderr, "\nT2 n=%u:", n2);
-                    for (q = 0; q < n2 && q < 10; ++q)
-                        fprintf(stderr, " (%I64d->%I64d)", t2[q].left, t2[q].right);
-                    fprintf(stderr, "\n");
-                }
-                n2r = rift_reverse(t2, n2, t2r);
-                qsort(t2r, n2r, sizeof(*t2r), rift_cmp);
-                if (getenv("PA30_DEBUG"))
-                {
-                    unsigned q;
-                    fprintf(stderr, "T2R n=%u:", n2r);
-                    for (q = 0; q < n2r && q < 10; ++q)
-                        fprintf(stderr, " (%I64d->%I64d)", t2r[q].left, t2r[q].right);
-                    fprintf(stderr, "\n");
-                }
-                sh.left = (__int64)sourceLen;
-                sh.right = 0;
-                n3 = rift_multiply(&sh, 1, t2r, n2r, t3);
-                if (getenv("PA30_DEBUG"))
-                {
-                    unsigned q;
-                    fprintf(stderr, "T3 n=%u:", n3);
-                    for (q = 0; q < n3 && q < 10; ++q)
-                        fprintf(stderr, " (%I64d->%I64d)", t3[q].left, t3[q].right);
-                    fprintf(stderr, "\n");
-                }
-                /* The DLL only reduces the *final* Sum table; dropping
-                 * repeated rifts here is wrong because the CLI entries
-                 * merged below can separate two same-rift entries. */
-                w = 0;
-                for (k = 0; k < n3; ++k)
-                {
-                    if (t3[k].left <= 0) continue;
-                    t3[w++] = t3[k];
-                }
-                n3 = w;
-                if (getenv("PA30_DEBUG"))
-                {
-                    unsigned q;
-                    fprintf(stderr, "ORIFT n=%u\n", n3);
-                    for (q = 0; q < n3 && q < 1000; ++q)
-                        fprintf(stderr, "  or[%u] %I64d -> %I64d\n",
-                                q, t3[q].left, t3[q].right);
-                }
-                orift = (RIFTENTRY *)malloc((size_t)(n3 ? n3 : 1) * sizeof(*orift));
-                if (orift)
-                {
-                    memcpy(orift, t3, (size_t)n3 * sizeof(*orift));
-                    oriftN = n3;
+                    qsort(t2r.p, t2r.n, sizeof(*t2r.p), rift_cmp);
+                    if (getenv("PA30_DEBUG"))
+                    {
+                        unsigned q;
+                        fprintf(stderr, "T1 n=%u:", t1.n);
+                        for (q = 0; q < t1.n && q < 10; ++q)
+                            fprintf(stderr, " (%I64d->%I64d)", t1.p[q].left, t1.p[q].right);
+                        fprintf(stderr, "\nT2 n=%u:", t2.n);
+                        for (q = 0; q < t2.n && q < 10; ++q)
+                            fprintf(stderr, " (%I64d->%I64d)", t2.p[q].left, t2.p[q].right);
+                        fprintf(stderr, "\nT2R n=%u:", t2r.n);
+                        for (q = 0; q < t2r.n && q < 10; ++q)
+                            fprintf(stderr, " (%I64d->%I64d)", t2r.p[q].left, t2r.p[q].right);
+                        fprintf(stderr, "\n");
+                    }
+                    sh.left = (__int64)sourceLen;
+                    sh.right = 0;
+                    if (rift_multiply(&sh, 1, t2r.p, t2r.n, &t3) != 0)
+                        rc = -1;
+                    else
+                    {
+                        /* The DLL only reduces the *final* Sum table; dropping
+                         * repeated rifts here is wrong because the CLI entries
+                         * merged below can separate two same-rift entries. */
+                        w = 0;
+                        for (k = 0; k < t3.n; ++k)
+                        {
+                            if (t3.p[k].left <= 0) continue;
+                            t3.p[w++] = t3.p[k];
+                        }
+                        t3.n = w;
+                        if (getenv("PA30_DEBUG"))
+                        {
+                            unsigned q;
+                            fprintf(stderr, "T3 n=%u ORIFT n=%u\n", t3.n, t3.n);
+                            for (q = 0; q < t3.n && q < 1000; ++q)
+                                fprintf(stderr, "  or[%u] %I64d -> %I64d\n",
+                                        q, t3.p[q].left, t3.p[q].right);
+                        }
+                        orift = t3.p;      /* ownership transfers to orift */
+                        oriftN = t3.n;
+                        t3.p = NULL;
+                        t3.n = t3.cap = 0;
+                    }
                 }
             }
+            riftb_free(&t1);
+            riftb_free(&t2);
+            riftb_free(&t2r);
+            riftb_free(&t3);
         }
 
         PHASE("pre");
