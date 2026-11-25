@@ -247,6 +247,20 @@ int CixApplyCab(const char *cabPath, const char *outDir)
                 if (rc != 0)
                     continue;
             }
+            else if (f->basisId)
+            {
+                CIXFILE *bf = FindById(&cix, f->basisId);
+                char from[4096];
+                if (!bf) continue;
+                JoinPath(from, sizeof(from), outDir, bf->name);
+                if (ReadWhole(from, &basis, &basisLen) != 0)
+                    continue;
+                rc = WriteWhole(target, basis, basisLen);
+                free(basis);
+                basis = NULL;
+                if (rc != 0)
+                    continue;
+            }
             else
             {
                 char from[4096];

@@ -81,7 +81,8 @@ needed ??the CAB reader is compiled into the EXE.
   computed for every produced target. Verified on `KB2959977`: all 513 CIX
   targets match their manifest
   SHA256 hashes and lengths, as are the 209 targets of `KB5131083`, both
-  natively and via OS delegation. Nested packages are walked through their
+  natively and via OS delegation. KB4539601 IA64 matches all 3279 CIX targets
+  natively. Nested packages are walked through their
   packaging descriptors (`toc.xml`, `cabinet.cablist.ini`) so the payload
   CABs of Windows 10 LCUs are expanded too, without expanding the `.cab`
   data files shipped inside those payloads. CAB images are memory-mapped,
@@ -109,12 +110,12 @@ needed ??the CAB reader is compiled into the EXE.
 
 ## Known limitations (outside the agreed functional core)
 
-* **PA30 decompression:** the native port in `delta.c` covers the default
-  CompositeFormat (both generated vectors and a PSF PA30 target are exact),
-  but real deltas with explicit `CompressionLengths` are only decoded via
-  the OS `msdelta.dll`. PA19 decoding is byte-exact both via `mspatcha.dll`
-  and natively in `src/mslzx.c`; `PA19_NO_OS=1` / `PA30_NO_OS=1` force the
-  native paths. See `DPX_REQUIREMENTS.md`.
+* **PA30 decompression:** the native port in `delta.c` handles default and
+  explicit CompositeFormat compression lengths, including multi-segment
+  formats. PA19 decoding is byte-exact both via `mspatcha.dll` and natively in
+  `src/mslzx.c`; `PA19_NO_OS=1` / `PA30_NO_OS=1` force the native paths. The
+  IA64 seed transform can be disabled with `PA30_NO_IA64PORT=1`. See
+  `DPX_REQUIREMENTS.md`.
 * Remaining DPX features: CIX manifests
   inside CABs. Building a PSF requires the
   `job.xml` / CIX machinery of `dpx.dll`, which is far beyond the core.

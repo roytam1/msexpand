@@ -2490,3 +2490,41 @@ Phase D is the genuine open-ended piece.
      matching the DLL's stable radix sort; `qsort` alone could swap zero
      padding with real entries and change two copied bytes.  Native
      KB5022508 now patches and verifies **141/141**.
+
+     **IA64 PA30 parity (part 95).**  Finished the native KB4539601 IA64
+     mismatches using `msdelta-ia64-wow32.dll` as the oracle.  Manifest SHA256
+     values, rather than the stale `ia64_final` tree, identified the first bad
+     file in each basis chain.  The final full run (`PA30_NO_OS=1`) patches and
+     verifies **3279/3279** targets.
+
+     The remaining roots required several independent fixes:
+
+       - CIX entries with a `<Basis>` but no `<Source>` are identity copies of
+         that basis, not RAW copies of a same-named CAB entry.
+       - Blob 3's import transform now skips ordinal-first ILTs (including the
+         PE32+ high-dword ordinal flag), handles bound IATs as
+         `MapRva(value - ImageBase) + ImageBase`, and remaps unbound entries
+         only when they resolve to import-by-name structures.
+       - An empty serialized CliMap still contributes AddHeapMap/AddTableMap's
+         default breakpoints when both metadata objects are non-empty.  This
+         makes blob 1503 byte-exact; suppressing the whole CLI contribution was
+         wrong.
+       - CompositeFormat segment storage is dynamic.  Blob 34 has 138 explicit
+         compression-length segments, beyond the old fixed 128-entry array.
+       - Import descriptors and ILT/IAT arrays are marked as data before the
+         byte-wise branch and IA64-bundle passes.  IA64 also honors the data-
+         directory handled bits; without them, certificate and directory bytes
+         at the end of executable sections were decoded as bundles.
+       - RVA-to-file-offset conversion now accepts only raw-backed section
+         bytes.  Virtual zero-fill tails are not valid branch/import targets.
+       - The import-section writable-bit workaround is limited to `.text`, as
+         required by native CLR images; it no longer clears the bit on unrelated
+         sections such as the kernel's `INIT` section.
+       - The output buffer is zero-initialized before decompression.
+
+     `PA30_NO_IA64PORT=1` remains the IA64 kill switch.  Regression validation
+     after these changes: KB5064399 480/480, SSU 228/228, NDP481 ARM64
+     2124/2124, NDP481 x64 2732/2732, KB5131083 209/209, KB2959977 513/513 and
+     KB5022508 141/141.  XPRESS (40), LZX, LZMS (6) and PA19 native/OS-oracle
+     tests also pass.  KB5022513 remains at its pre-existing HEAD result of
+     141/161; it is not changed by this work.

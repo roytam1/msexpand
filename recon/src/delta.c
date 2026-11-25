@@ -576,10 +576,18 @@ typedef struct tagCOMPFMT
 {
     unsigned nSeg;
     unsigned defaultFormat;
-    unsigned boundary[128];
+    unsigned *boundary;
     unsigned char metaLen[39];
-    unsigned char lens[128][872];
+    unsigned char *lens;
 } COMPFMT;
+
+static void compfmt_free(COMPFMT *f)
+{
+    free(f->boundary);
+    free(f->lens);
+    f->boundary = NULL;
+    f->lens = NULL;
+}
 
 static int compfmt_read(COMPFMT *f, BITR *br)
 {
@@ -592,13 +600,21 @@ static int compfmt_read(COMPFMT *f, BITR *br)
     if (br_read(br, 1))
     {
         f->nSeg = 1;
-        f->boundary[0] = 0;
         f->defaultFormat = 1;
         return 0;                   /* default format */
     }
     f->nSeg = br_read_int(br);
-    if (f->nSeg == 0 || f->nSeg > 128)
+    if (f->nSeg == 0 ||
+        f->nSeg > (size_t)-1 / sizeof(*f->boundary) ||
+        f->nSeg > (size_t)-1 / 872)
         return -1;
+    f->boundary = (unsigned *)malloc((size_t)f->nSeg * sizeof(*f->boundary));
+    f->lens = (unsigned char *)malloc((size_t)f->nSeg * 872);
+    if (!f->boundary || !f->lens)
+    {
+        compfmt_free(f);
+        return -1;
+    }
     /* Boundaries are cumulative endpoints in the combined [source][output]
      * buffer, encoded as successive deltas.  The first delta is the source
      * length; convert each accumulated endpoint to an output-relative
@@ -617,7 +633,10 @@ static int compfmt_read(COMPFMT *f, BITR *br)
     for (i = 0; i < 39; ++i)
         f->metaLen[i] = (unsigned char)br_read(br, 4);
     if (huff_build(&meta, f->metaLen, 39, 15) != 0)
+    {
+        compfmt_free(f);
         return -1;
+    }
 
     /* Each segment's length set is delta-coded against the previous one.
      * The encoder starts from Init(Val=1), which memset()s the lengths to 0. */
@@ -625,9 +644,13 @@ static int compfmt_read(COMPFMT *f, BITR *br)
     baseline = initial;
     for (i = 0; i < f->nSeg; ++i)
     {
-        if (cl_read(f->lens[i], br, &meta, baseline) != 0)
+        unsigned char *lens = f->lens + (size_t)i * 872;
+        if (cl_read(lens, br, &meta, baseline) != 0)
+        {
+            compfmt_free(f);
             return -1;
-        baseline = f->lens[i];
+        }
+        baseline = lens;
     }
     return 0;
 }
@@ -1826,8 +1849,10 @@ static int cli_map_read(CLIMAP *cm, BITR *br)
             return -1;
     }
     for (t = 0; t < 64; ++t)
+    {
         if (rift_read_fmt(&cm->tbl[t], &cm->tblN[t], &fc, &fd, br) != 0)
             return -1;
+    }
     return 0;
 }
 
@@ -2698,19 +2723,10 @@ static int cli_compression_rift(RIFTENTRY **out, unsigned *outn,
     memset(&o, 0, sizeof(o));
     if (src->empty || tgt->empty)
         return 0;
-    /* The DLL skips CompressionRiftTableFromCliMap entirely when the CliMap
-     * is empty (BitReadCliMap's presence bit was clear).  Adding identity
-     * entries for every metadata table in that case blows the offset rift up
-     * from a handful of entries to tens of thousands and corrupts RIFT
-     * matches. */
-    {
-        unsigned q, any = 0;
-        for (q = 0; q < 4; ++q)
-            if (cm->heapN[q]) any = 1;
-        for (q = 0; q < 64; ++q)
-            if (cm->tblN[q]) any = 1;
-        if (!any) return 0;
-    }
+    /* An empty serialized CliMap still contributes the default heap/table
+     * mappings when both metadata objects are non-empty.  AddHeapMap and
+     * AddTableMap turn each empty per-object map into one identity-rift
+     * breakpoint; only empty source or target metadata suppresses the pass. */
     cli_add_heap(&o, (__int64)src->stringsOff, (__int64)tgt->stringsOff,
                  cm->heap[0], cm->heapN[0]);
     cli_add_heap(&o, (__int64)src->usOff, (__int64)tgt->usOff,
@@ -2868,20 +2884,30 @@ static void pa30_mark_nonexe(const unsigned char *buf, unsigned long len,
                     int q;
                     if (!rd32(buf + d + 12) && !rd32(buf + d + 8) &&
                         !rd32(buf + d + 4)) break;
+                    /* Descriptor fields are data even when the import table
+                     * lives in an executable section.  In particular, an ILT
+                     * RVA can begin with an E8 byte that the byte-wise x86
+                     * branch heuristic must not decode as a CALL opcode. */
+                    for (k = d; k < d + 20; ++k) mask[k] |= 0x01U;
                     th[0] = rd32(buf + d);
                     th[1] = rd32(buf + d + 16);
                     for (q = 0; q < 2; ++q)
                     {
                         unsigned long t, ti;
+                        unsigned long width = (rd16(buf + opt) == 0x20B) ? 8 : 4;
                         if (!th[q]) continue;
                         t = pa30_rva_off(buf, len, th[q]);
                         if (t == 0xFFFFFFFFUL) continue;
-                        for (ti = 0; ti < 4096 && t + 4 <= len; ++ti)
+                        for (ti = 0; ti < 4096 && t + width <= len; ti++)
                         {
                             unsigned long v = rd32(buf + t);
-                            unsigned long no, nk;
-                            if (!v) break;
-                            t += 4;
+                            unsigned long hi = (width == 8) ? rd32(buf + t + 4) : 0;
+                            unsigned long no, nk, k;
+                            if (!v && !hi) break;
+                            /* Thunk arrays are data even in executable sections.
+                             * IA64 bundles must not be decoded from their RVAs. */
+                            for (k = 0; k < width; ++k) mask[t + k] |= 0x01U;
+                            t += width;
                             if (v & 0x80000000UL) continue;
                             no = pa30_rva_off(buf, len, v);
                             if (no == 0xFFFFFFFFUL || no + 2 > len) continue;
@@ -2910,6 +2936,29 @@ static void pa30_mark_nonexe(const unsigned char *buf, unsigned long len,
                     mask[eo + k] |= 0x01U;
             }
         }
+    }
+}
+
+static void pa30_mark_data_dirs(const unsigned char *buf, unsigned long len,
+                               unsigned char *mask)
+{
+    unsigned long pe, opt, dd, i;
+    if (len < 0x40) return;
+    pe = rd32(buf + 0x3C);
+    if (pe > len - 24 || memcmp(buf + pe, "PE\0\0", 4)) return;
+    opt = pe + 24;
+    if (!PA30_MAGIC_OK(rd16(buf + opt))) return;
+    dd = PA30_DD(buf, opt);
+    if (dd > len || 16 * 8 > len - dd) return;
+    for (i = 0; i < 16; ++i)
+    {
+        unsigned long rva = rd32(buf + dd + 8 * i);
+        unsigned long size = rd32(buf + dd + 8 * i + 4);
+        unsigned long off = pa30_rva_off(buf, len, rva);
+        unsigned long k;
+        if (!rva || !size || off == 0xFFFFFFFFUL || off >= len) continue;
+        if (size > len - off) size = len - off;
+        for (k = 0; k < size; ++k) mask[off + k] |= 0x03U;
     }
 }
 
@@ -4318,9 +4367,18 @@ static void pa30_mark_import_section(unsigned char *buf, unsigned long len)
                     (buf[o + 5] | 0x20) == 'a' &&
                     (buf[o + 6] == 0 || buf[o + 6] == ' ') &&
                     (buf[o + 7] == 0 || buf[o + 7] == ' ');
+                int text =
+                    (buf[o] | 0x20) == '.' &&
+                    (buf[o + 1] | 0x20) == 't' &&
+                    (buf[o + 2] | 0x20) == 'e' &&
+                    (buf[o + 3] | 0x20) == 'x' &&
+                    (buf[o + 4] | 0x20) == 't' &&
+                    (buf[o + 5] == 0 || buf[o + 5] == ' ') &&
+                    (buf[o + 6] == 0 || buf[o + 6] == ' ') &&
+                    (buf[o + 7] == 0 || buf[o + 7] == ' ');
                 if (idata && !(ch & 0x80000000UL))
                     ch |= 0x80000000UL;
-                else if (!idata && (ch & 0x80000000UL))
+                else if (text && (ch & 0x80000000UL))
                     ch &= ~0x80000000UL;
             }
             buf[o + 36] = (unsigned char)(ch & 0xFF);
@@ -4349,11 +4407,10 @@ static unsigned long pa30_rva_off(const unsigned char *b, unsigned long len,
     {
         unsigned long o = sh + 40 * s;
         unsigned long va = rd32(b + o + 12);
-        unsigned long vs = rd32(b + o + 8);
         unsigned long rs = rd32(b + o + 16);
         unsigned long raw = rd32(b + o + 20);
-        unsigned long span = vs ? vs : rs;
-        if (rva >= va && rva < va + span)
+        if (rva >= va && rva - va < rs && raw <= len &&
+            rva - va <= len - raw)
             return raw + (rva - va);
     }
     return 0xFFFFFFFFUL;
@@ -4367,25 +4424,49 @@ static void pa30_set_u32(unsigned char *b, unsigned long off, unsigned long v)
     b[off + 3] = (unsigned char)((v >> 24) & 0xFF);
 }
 
+static void pa30_set_u64(unsigned char *b, unsigned long off, unsigned __int64 v)
+{
+    pa30_set_u32(b, off, (unsigned long)v);
+    pa30_set_u32(b, off + 4, (unsigned long)(v >> 32));
+}
+
+static int pa30_import_name_valid(const unsigned char *buf, unsigned long len,
+                                  unsigned long rva)
+{
+    unsigned long off = pa30_rva_off(buf, len, rva);
+    unsigned long maxSize = cli_rva_max_size(buf, len, rva);
+    unsigned long i;
+    if (off == 0xFFFFFFFFUL || off > len || maxSize < 3 ||
+        maxSize > len - off) return 0;
+    for (i = 2; i < maxSize; ++i)
+        if (!buf[off + i]) return 1;
+    return 0;
+}
+
 static void pa30_rewrite_imports(unsigned char *buf, unsigned long len,
                                  const RIFTENTRY *rt, unsigned rn)
 {
     unsigned long pe, opt, imp, off, d;
     if (len < 0x40) return;
     pe = rd32(buf + 0x3C);
-    if (pe + 24 > len || memcmp(buf + pe, "PE\0\0", 4)) return;
+    if (pe > len - 24 || memcmp(buf + pe, "PE\0\0", 4)) return;
     opt = pe + 24;
-    if (!PA30_MAGIC_OK(rd16(buf + opt)) || opt + 0x70 > len) return;
+    if (!PA30_MAGIC_OK(rd16(buf + opt)) || opt > len || len - opt < 0x70)
+        return;
     imp = rd32(buf + PA30_DD(buf, opt) + 8);
     if (!imp) return;
     off = pa30_rva_off(buf, len, imp);
     if (off == 0xFFFFFFFFUL) return;
-    for (d = 0; d < 256 && off + 20 * (d + 1) <= len; ++d)
+    for (d = 0; d < 256 && off <= len && 20 * (d + 1) <= len - off; ++d)
     {
         unsigned long o = off + 20 * d;
         unsigned long oft = rd32(buf + o);
+        unsigned long stamp = rd32(buf + o + 4);
         unsigned long name = rd32(buf + o + 12);
         unsigned long ft = rd32(buf + o + 16);
+        unsigned long imageBase = rd32(buf + opt + 0x1C);
+        unsigned __int64 imageBase64 = (rd16(buf + opt) == 0x20B)
+                                     ? rd64(buf + opt + 0x18) : imageBase;
         unsigned long k;
         if (!oft && !name && !ft) break;
         if (oft) pa30_set_u32(buf, o, pa30_map_rva(rt, rn, (long)oft));
@@ -4396,18 +4477,37 @@ static void pa30_rewrite_imports(unsigned char *buf, unsigned long len,
             unsigned long t = k ? ft : oft;
             unsigned long to = t ? pa30_rva_off(buf, len, t) : 0xFFFFFFFFUL;
             unsigned long width = (rd16(buf + opt) == 0x20B) ? 8 : 4;
+            unsigned long first = 0;
             unsigned i;
-            if (to == 0xFFFFFFFFUL) continue;
-            for (i = 0; i < 4096 && to + width * (i + 1) <= len; ++i)
+            if (to == 0xFFFFFFFFUL || to > len || width > len - to) continue;
+            first = rd32(buf + to);
+            /* TransformImports32 tests the first ILT entry for every iteration.
+             * An ordinal-first table is therefore left completely untouched.
+             * PE32+ stores the ordinal flag in the high dword. */
+            if (!k && ((width == 8 ? rd32(buf + to + 4) : first) &
+                       0x80000000UL)) continue;
+            for (i = 0; i < 4096 && i <= (len - to) / width; ++i)
             {
                 unsigned long at = to + width * i;
                 unsigned long v = rd32(buf + at);
                 unsigned long hi = (width == 8) ? rd32(buf + at + 4) : 0;
                 if (!v && !hi) break;
-                if (hi & 0x80000000UL) continue;    /* ordinal import */
-                if (v && !(v & 0x80000000UL))
-                    pa30_set_u32(buf, at,
-                                 pa30_map_rva(rt, rn, (long)v));
+                if (k && stamp)
+                {
+                    /* Bound IAT: MapRva(value - ImageBase) + ImageBase. */
+                    if (width == 4)
+                        pa30_set_u32(buf, at,
+                            pa30_map_rva(rt, rn, v - imageBase) + imageBase);
+                    else
+                    {
+                        unsigned __int64 value = rd64(buf + at);
+                        unsigned long mapped = pa30_map_rva(rt, rn,
+                            (unsigned long)(value - imageBase64));
+                        pa30_set_u64(buf, at, imageBase64 + mapped);
+                    }
+                }
+                else if (!(v & 0x80000000UL) && pa30_import_name_valid(buf, len, v))
+                    pa30_set_u32(buf, at, pa30_map_rva(rt, rn, (long)v));
             }
         }
     }
@@ -5011,7 +5111,7 @@ static int compo_decompress(BITR *br, const COMPFMT *fmt,
             }
             else
             {
-                memcpy(lens, fmt->lens[segIndex], sizeof(lens));
+                memcpy(lens, fmt->lens + (size_t)segIndex * 872, sizeof(lens));
             }
             if (compf_build(&cf, lens) != 0)
                 return -1;
@@ -5782,6 +5882,7 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
         memset(&cliSrc, 0, sizeof(cliSrc));
         memset(&cliTgt, 0, sizeof(cliTgt));
         memset(&cliMap, 0, sizeof(cliMap));
+        memset(&cf, 0, sizeof(cf));
         cliSrc.empty = 1;
         cliTgt.empty = 1;
 
@@ -6300,6 +6401,7 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
                                 if (ia64Hint)
                                 {
                                     pa30_mark_nonexe(prepared, sourceLen, ia64Hint);
+                                    pa30_mark_data_dirs(prepared, sourceLen, ia64Hint);
                                     pa30_transform_ia64(prepared, sourceLen, rt, rn,
                                                         ia64Hint, targetGp);
                                     free(ia64Hint);
@@ -6416,7 +6518,7 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
         PHASE("seed");
         if (rc == 0)
         {
-            result = (unsigned char *)malloc(h.targetSize);
+            result = (unsigned char *)calloc(h.targetSize, 1);
             if (!result)
                 rc = -1;
             else
@@ -6431,6 +6533,7 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
         }
         PHASE("decomp");
         if (decompressSrc != source) free((void *)decompressSrc);
+        compfmt_free(&cf);
         cli_map_free(&cliMap);
         free(tmp);
         free(orift);
