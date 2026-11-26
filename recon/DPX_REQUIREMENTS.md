@@ -2715,3 +2715,15 @@ Phase D is the genuine open-ended piece.
       directories and relocation sites.  NDP481 ARM64 reaches 2124/2124, and
       NDP481 x64 improves from 2723 to 2728 of 2732.  All other baselines and
       the unit tests remain unchanged.
+
+      **x64 MarkNonExe precision (part 106).**  NDP481 x64 still had four
+      failures.  The first (`custommarshalers.dll`) differed in two bytes of
+      an E9 displacement.  The compressed stream and repeat history were
+      correct.  The shared MarkNonExe helper had marked executable code as
+      import/export data, so the AMD64 walk skipped the entire function that
+      contained the E9.  A dedicated x64 hint now marks only non-executable
+      sections, headers, data directories and relocation sites.  It does not
+      guess that executable bytes are import names or export arrays.  Both
+      the CLI and native branches use this hint.  NDP481 x64 reaches
+      2732/2732 and NDP481 ARM64 remains 2124/2124.  All other baselines and
+      the unit tests pass.

@@ -3044,6 +3044,38 @@ static void pa30_mark_data_dirs(const unsigned char *buf, unsigned long len,
     }
 }
 
+static void pa30_mark_x64_hint(const unsigned char *buf, unsigned long len,
+                               unsigned char *mask)
+{
+    unsigned long pe, opt, nsec, sh, s, k;
+    if (len < 0x40) return;
+    pe = rd32(buf + 0x3C);
+    if (pe > len - 24 || memcmp(buf + pe, "PE\0\0", 4)) return;
+    opt = pe + 24;
+    if (!PA30_MAGIC_OK(rd16(buf + opt))) return;
+    nsec = rd16(buf + pe + 6);
+    sh = opt + rd16(buf + pe + 20);
+    for (s = 0; s < nsec && sh + 40 * s + 40 <= len; ++s)
+    {
+        unsigned long o = sh + 40 * s;
+        unsigned long chars = rd32(buf + o + 36);
+        unsigned long raw = rd32(buf + o + 20);
+        unsigned long rs = rd32(buf + o + 16);
+        if (chars & 0x20000000UL) continue;
+        if (raw >= len) continue;
+        if (rs > len - raw) rs = len - raw;
+        for (k = 0; k < rs; ++k)
+            mask[raw + k] |= 0x01U;
+    }
+    {
+        unsigned long hdr = rd32(buf + opt + 0x3C);
+        if (hdr > len) hdr = len;
+        for (k = 0; k < hdr; ++k)
+            mask[k] |= 0x03U;
+    }
+    pa30_mark_data_dirs(buf, len, mask);
+}
+
 static void pa30_mask_bytes(unsigned char *mask, unsigned long len,
                             unsigned long off, unsigned long count,
                             unsigned long width, unsigned char mark)
@@ -6443,8 +6475,7 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
                                         (unsigned char *)calloc((size_t)sourceLen, 1);
                                     if (x64Hint)
                                     {
-                                        pa30_mark_nonexe(prepared, sourceLen, x64Hint);
-                                        pa30_mark_data_dirs(prepared, sourceLen, x64Hint);
+                                        pa30_mark_x64_hint(prepared, sourceLen, x64Hint);
                                         pa30_reloc_mask(prepared, sourceLen, x64Hint);
                                         pa30_transform_amd64_rip(prepared, sourceLen,
                                             rt, rn, sizeOfImage, x64Hint);
@@ -6520,8 +6551,7 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
                                     (unsigned char *)calloc((size_t)sourceLen, 1);
                                 if (x64Hint)
                                 {
-                                    pa30_mark_nonexe(prepared, sourceLen, x64Hint);
-                                    pa30_mark_data_dirs(prepared, sourceLen, x64Hint);
+                                    pa30_mark_x64_hint(prepared, sourceLen, x64Hint);
                                     pa30_reloc_mask(prepared, sourceLen, x64Hint);
                                     pa30_transform_amd64_rip(prepared, sourceLen, rt, rn,
                                                              sizeOfImage, x64Hint);

@@ -100,8 +100,8 @@ needed; the CAB reader is compiled into the EXE.
   both 65,256-entry payload CABs of `KB5136493` expand natively.
   SFX `[Verify]` and `[Delete]` stages also
   report per-file progress. Very large nested LZX folders (such as the Windows 11 NDP481 payload) can desync our native CAB LZX decoder; when native extraction fails the tool falls back to the system `expand.exe` for that folder (`CAB_NO_OS=1` keeps the failure visible). PA30 patching itself stays native; on the Windows 11 NDP481 MSU the native
-  decoder now matches **2728/2732** x64 CIX targets and **2124/2124** ARM64
-  CIX targets byte-for-byte on the Windows 11 NDP481 packages. The C port now also reads UNCOMPRESSED LZX bytes through `lzxGetBits(8)` exactly as the original `CabLzx.cpp` does.
+  decoder now matches **all 2732/2732 x64 CIX targets** and **all 2124/2124
+  ARM64 CIX targets** byte-for-byte on the Windows 11 NDP481 packages. The C port now also reads UNCOMPRESSED LZX bytes through `lzxGetBits(8)` exactly as the original `CabLzx.cpp` does.
 * **PSTREAM/PSF containers (Phase A):** 48-byte header parsing, UTF-8 CIX
   XML index, `-D` listing, `-F:` selection, RAW source ranges, CRC32
   verification, and creation of nested output directories. Tested with the
