@@ -2638,3 +2638,19 @@ Phase D is the genuine open-ended piece.
       KB5022513 161/161, KB5022508 141/141, KB5064399 480/480, SSU 228/228,
       NDP481 ARM64 2124/2124, NDP481 x64 2732/2732, KB5131083 209/209 and
       KB2959977 513/513.  XPRESS, LZX, LZMS, PA19 and the ARM32 hint test pass.
+
+      **ARM32 function-entry hint gate (part 101).**  KB5012142 ARM failed
+      three managed targets and KB5020868 ARM one (`system.data.dll`), each
+      with only a handful of bytes wrong inside Thumb BL encodings that the
+      source-side ARM transform should have remapped.  The failing function
+      entries carry hint `0x01` (relocation site) in our up-front mask.  The
+      DLL sets that bit in a later pass, so its ARM disassembler only checks
+      bit 1 ("already handled") at the function entry; our `& 3` test skipped
+      those functions entirely.  Narrowing the entry check to `& 2` makes all
+      four targets byte-exact, and the interior-byte check already used bit 1.
+
+      Full regression: KB5012142 220/220, KB5020868 158/158, KB4539601 IA64
+      3279/3279, KB4536952 90/90, KB5022513 161/161, KB5022508 141/141,
+      KB5064399 480/480, SSU 228/228, NDP481 ARM64 2124/2124, NDP481 x64
+      2732/2732, KB5131083 209/209 and KB2959977 513/513.  XPRESS, LZX,
+      LZMS, PA19 and the ARM32 hint test pass.

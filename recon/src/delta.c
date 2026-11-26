@@ -4243,7 +4243,10 @@ static void pa30_transform_arm32(unsigned char *buf, unsigned long len,
         {
             ARMINSN32 in;
             unsigned long k, skip = 0;
-            if (hint && p + 1 < len && (hint[p + 1] & 3))
+            /* Only bit 1 means "already handled".  Bit 0 is a relocation
+             * site; our hint is built up front, while the DLL sets that bit
+             * in a later pass, so it must not suppress disassembly here. */
+            if (hint && p + 1 < len && (hint[p + 1] & 2))
             { p += 2; rva += 2; continue; }
             pa30_arm32_decode(buf + p, limit - p, &in);
             if (in.len < 2) break;

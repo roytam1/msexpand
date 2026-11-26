@@ -89,6 +89,8 @@ needed; the CAB reader is compiled into the EXE.
   natively and via OS delegation. KB4539601 IA64 matches all 3279 CIX targets
   natively. KB5022513 ARM matches all 161 targets after the offset-rift
   composition was made dynamic, and KB4536952 IA64 matches all 90 targets.
+  KB5012142 ARM matches 220/220 and KB5020868 ARM 158/158 after the ARM32
+  function-entry hint gate was narrowed to bit 1.
   Nested packages are walked through their
   packaging descriptors (`toc.xml`, `cabinet.cablist.ini`) so the payload
   CABs of Windows 10 LCUs are expanded too, without expanding the `.cab`
