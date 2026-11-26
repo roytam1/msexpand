@@ -4736,10 +4736,6 @@ static void pa30_transform_relcalls(unsigned char *buf, unsigned long len,
             long rel, newrel, siteRVA, targetRVA, mappedSite, mappedTarget;
             unsigned long to;
             if (buf[p] != 0xE8) continue;
-            /* An E8 byte that is the disp8 of a preceding mov/lea [ebp+disp8]
-             * is data, not a call opcode; the DLL's decoder never visits it. */
-            if (p >= 2 && buf[p - 2] == 0x8D && buf[p - 1] == 0x45)
-                continue;
             if (hint && (hint[p] | hint[p + 1] | hint[p + 2] |
                          hint[p + 3] | hint[p + 4]) & 0x01)
                 continue;

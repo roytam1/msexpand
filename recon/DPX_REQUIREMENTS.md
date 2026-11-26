@@ -1856,7 +1856,9 @@ Phase D is the genuine open-ended piece.
     opcode when it was actually the disp8 operand of a preceding LEA
     (8D 45 E8).  The DLL's decoder never visits such bytes.  Skipping E8
     when preceded by 8D 45 makes blob 249 byte-exact.  A broader skip (also
-    8B 45) regressed blob 113, so only the LEA form is skipped.
+    8B 45) regressed blob 113, so only the LEA form is skipped.  Part 100
+    later removed this heuristic: the hint-bit checks alone handle blob 249,
+    and skipping every `8D 45 E8` is wrong for other images.
     At this point every real root-cause delta (91, 147, 249, 314, 317, 320)
     is byte-exact with correct bases: 12 of 842 flagged blobs remain, all
     from the audit script's handling of deltas with no basis entry (their
@@ -2617,3 +2619,22 @@ Phase D is the genuine open-ended piece.
       the Windows `msdelta.dll` (`ApplyDeltaA`) reject them.  This is Rust-side
       permissiveness, not a native regression, so the existing nonzero-target
       guard stays.
+
+      **i386 relcall LEA heuristic removed (part 100).**  Expanding
+      `windows6.1-kb4536952-ia64` patched all 90 CIX targets but verified only
+      89: the x86 `esscli.dll` (File 50) differed in two bytes at output
+      offsets 186303/186304.  Applying its delta chain step by step showed
+      every earlier step byte-exact; the last delta rewrote a five-byte source
+      copy whose displacement had been changed by the source-side i386 relative
+      call pass.  The pass had skipped the E8 at source offset 428097 because
+      the preceding bytes are `8D 45` (part 69's "E8 is a LEA disp8" rule).
+      The Windows `msdelta.dll` oracle and both Rust decoders treat that byte
+      as a real call and rewrite its rel32, so the heuristic is wrong here.
+      Removing the `8D 45` check makes the delta byte-exact; the existing hint
+      bit-0 checks still suppress genuinely marked operand bytes, and blobs
+      249/113 in KB4539601 remain byte-exact.
+
+      Full regression: KB4536952 90/90, KB4539601 IA64 3279/3279,
+      KB5022513 161/161, KB5022508 141/141, KB5064399 480/480, SSU 228/228,
+      NDP481 ARM64 2124/2124, NDP481 x64 2732/2732, KB5131083 209/209 and
+      KB2959977 513/513.  XPRESS, LZX, LZMS, PA19 and the ARM32 hint test pass.
