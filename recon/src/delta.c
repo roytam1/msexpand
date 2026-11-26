@@ -6423,7 +6423,8 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
                                     unsigned long sh = lfa + 24 +
                                         rd16(prepared + lfa + 20), si;
                                     for (si = 0; si < nSect && sh + 40 * (si + 1) <= sourceLen; ++si)
-                                        if (!memcmp(prepared + sh + 40 * si, ".rdata\0\0", 8))
+                                        if (!memcmp(prepared + sh + 40 * si, ".rdata\0\0", 8) ||
+                                            !memcmp(prepared + sh + 40 * si, ".xdata\0\0", 8))
                                         { hasRdata = 1; break; }
                                     if (hasRdata)
                                     {
@@ -6468,8 +6469,19 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
                             if (getenv("PA30_DEBUG")) fprintf(stderr, "SEED amd64 rip\n");
                             if (pa30_is_x64_image(prepared, sourceLen))
                             {
-                                pa30_transform_amd64_rip(prepared, sourceLen, rt, rn,
-                                                         sizeOfImage, hintBuf);
+                                unsigned char *x64Hint =
+                                    (unsigned char *)calloc((size_t)sourceLen, 1);
+                                if (x64Hint)
+                                {
+                                    pa30_mark_nonexe(prepared, sourceLen, x64Hint);
+                                    pa30_mark_data_dirs(prepared, sourceLen, x64Hint);
+                                    pa30_transform_amd64_rip(prepared, sourceLen, rt, rn,
+                                                             sizeOfImage, x64Hint);
+                                    free(x64Hint);
+                                }
+                                else
+                                    pa30_transform_amd64_rip(prepared, sourceLen, rt, rn,
+                                                             sizeOfImage, hintBuf);
                                 PHASE("nat-amd64rip");
                                 if (getenv("PA30_DEBUG")) fprintf(stderr, "SEED pdata\n");
                                 pa30_transform_pdata_amd64(prepared, sourceLen, rt, rn,

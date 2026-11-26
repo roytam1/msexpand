@@ -2639,6 +2639,28 @@ Phase D is the genuine open-ended piece.
       NDP481 ARM64 2124/2124, NDP481 x64 2732/2732, KB5131083 209/209 and
       KB2959977 513/513.  XPRESS, LZX, LZMS, PA19 and the ARM32 hint test pass.
 
+      **CLI branch section gate and x64 hint (part 102).**  KB5028864 failed
+      two managed targets.  The CLI branch ran the i386 relative call and jump
+      passes only for sources with a `.rdata` section.  One delta transforms an
+      NGEN source that has `.xdata` instead, so its E8 operands stayed stale.
+      The gate now accepts `.rdata` or `.xdata`; the package reaches 544/544.
+
+      KB5021653 x64 failed many targets.  Its first bad delta rewrites AMD64
+      RIP-relative operands in bytes that MarkNonExe marks as a data directory.
+      The native x64 pass used the shared hint, which only tracks bit 0.  It
+      now uses a dedicated hint built with the same data-directory marks as the
+      IA64 and ARM32 passes.  This reduces the first delta from 241 to 35 wrong
+      bytes and raises package verification from 1735 to 1750 of 1811.  The
+      remaining bytes are in the tail of the rebuilt base relocation table.
+      Those failures are still open, so this is not a full fix for KB5021653.
+
+      Full regression: KB5028864 544/544, KB5021653 1750/1811 (partial),
+      KB4539601 3279/3279, KB4536952 90/90, KB5022513 161/161, KB5022508
+      141/141, KB5012142 220/220, KB5020868 158/158, NDP481 ARM64 2124/2124,
+      NDP481 x64 2732/2732, KB5064399 480/480, SSU 228/228, KB5131083 209/209
+      and KB2959977 513/513.  XPRESS, LZX, LZMS, PA19 and the ARM32 hint test
+      pass.
+
       **ARM32 function-entry hint gate (part 101).**  KB5012142 ARM failed
       three managed targets and KB5020868 ARM one (`system.data.dll`), each
       with only a handful of bytes wrong inside Thumb BL encodings that the
