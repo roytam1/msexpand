@@ -2809,6 +2809,25 @@ static void cli_map_free(CLIMAP *cm)
     for (i = 0; i < 64; ++i) { free(cm->tbl[i]); cm->tbl[i] = NULL; cm->tblN[i] = 0; }
 }
 
+/* Map a 32-bit RVA that must stay unsigned, such as a wrapped relocation
+ * value.  RiftTable::Map compares the address as an unsigned value. */
+static unsigned long pa30_map_rva_u32(const RIFTENTRY *rt, unsigned rn,
+                                      unsigned long rva)
+{
+    unsigned i;
+    __int64 rift = 0;
+    if (!rt || !rn)
+        return rva;
+    for (i = 0; i < rn; ++i)
+    {
+        if ((unsigned __int64)rt[i].left <= (unsigned __int64)rva)
+            rift = rt[i].right - rt[i].left;
+        else
+            break;
+    }
+    return (unsigned long)((unsigned __int64)rva + (__int64)rift);
+}
+
 static unsigned long pa30_map_rva(const RIFTENTRY *rt, unsigned rn,
                                   unsigned long rva)
 {
@@ -4344,6 +4363,14 @@ static void pa30_transform_amd64_rip(unsigned char *buf, unsigned long len,
             { ++p; continue; }
             step = pa30_x64_decode(buf + p, buf + limit, &rip);
             if (step <= 0) { ++p; continue; }
+            /* A handled byte inside the instruction stops the walk. */
+            {
+                unsigned long k, bad = 0;
+                for (k = 1; k < (unsigned long)step; ++k)
+                    if (hint && p + k < len && (hint[p + k] & 2))
+                    { bad = k; break; }
+                if (bad) { p += bad; continue; }
+            }
             if (rip >= 0 && p + (unsigned long)rip + 4 <= limit)
             {
                 unsigned long f = p + (unsigned long)rip;
@@ -5078,9 +5105,9 @@ static void pa30_transform_relocs(unsigned char *buf, unsigned long len,
                 {
                     unsigned __int64 v = (type == 10) ? rd64(buf + fo) :
                                                        rd32(buf + fo);
+                    unsigned long rva = (unsigned long)v - (unsigned long)oldBase;
                     unsigned __int64 nv =
-                        (unsigned __int64)pa30_map_rva(rt, rn,
-                            (unsigned long)(v - oldBase)) + newBase;
+                        (unsigned __int64)pa30_map_rva_u32(rt, rn, rva) + newBase;
                     if (type == 10)
                     {
                         unsigned k;
@@ -5091,8 +5118,7 @@ static void pa30_transform_relocs(unsigned char *buf, unsigned long len,
                         pa30_set_u32(buf, fo, (unsigned long)nv);
                 }
             }
-            rel[n].rva = (unsigned long)pa30_map_rva(rt, rn,
-                                                     (long)(page + roff));
+            rel[n].rva = pa30_map_rva_u32(rt, rn, page + roff);
             rel[n].type = (type == 1 || type == 2 || type == 3 ||
                            type == 4 || type == 10) ? (unsigned short)type : 0;
             rel[n].extra = (type == 4 && e + 4 <= bsize)
@@ -5109,40 +5135,42 @@ static void pa30_transform_relocs(unsigned char *buf, unsigned long len,
     off = pa30_rva_off(buf, len, rrva);
     w = off;
     i = 0;
-    while (i < n && w + 8 <= end)
+    /* Write blocks until the extent is full, like WriteRelocationEntries.
+     * Each block stops at the next page or when its room is used up. */
+    while (i < n && end - w >= 8)
     {
         unsigned long page = rel[i].rva & 0xFFFFF000UL;
-        unsigned long j = i, k, cnt, bsize, wp, words = 0;
-        while (j < n && (rel[j].rva & 0xFFFFF000UL) == page) ++j;
-        cnt = j - i;
-        for (k = i; k < j; ++k)
-            words += (rel[k].type == 4) ? 2 : 1;
-        bsize = 8 + 2 * words;
-        if (bsize & 2) bsize += 2;
-        if (w + bsize > end) break;
+        unsigned long wp, room, words = 0;
         pa30_set_u32(buf, w, page);
-        pa30_set_u32(buf, w + 4, bsize);
+        pa30_set_u32(buf, w + 4, 8);
         wp = w + 8;
-        for (k = i; k < j; ++k)
+        room = end - wp;
+        while (room >= 2 && i < n &&
+               (rel[i].rva & 0xFFFFF000UL) == page)
         {
-            unsigned long v = (rel[k].rva & 0xFFF) | (rel[k].type << 12);
+            unsigned long v = (rel[i].rva & 0xFFF) | (rel[i].type << 12);
             buf[wp] = (unsigned char)(v & 0xFF);
             buf[wp + 1] = (unsigned char)(v >> 8);
             wp += 2;
-            if (rel[k].type == 4)
+            room -= 2;
+            ++words;
+            if (rel[i].type == 4 && room >= 2)
             {
-                buf[wp] = (unsigned char)(rel[k].extra & 0xFF);
-                buf[wp + 1] = (unsigned char)(rel[k].extra >> 8);
+                buf[wp] = (unsigned char)(rel[i].extra & 0xFF);
+                buf[wp + 1] = (unsigned char)(rel[i].extra >> 8);
                 wp += 2;
+                room -= 2;
+                ++words;
             }
+            ++i;
         }
-        if ((wp - w) & 2)
+        if (room >= 2 && (words & 1))
         {
             buf[wp] = 0; buf[wp + 1] = 0;
             wp += 2;
         }
+        pa30_set_u32(buf, w + 4, (unsigned long)(wp - w));
         w = wp;
-        i = j;
     }
     free(rel);
 }
@@ -6462,9 +6490,13 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
                              * relinks) enable none of them. */
                             if (getenv("PA30_DEBUG")) fprintf(stderr, "SEED pointers\n");
                             PHASE("nat-start");
-                            pa30_transform_pointers(prepared, sourceLen, rt, rn,
-                                oldBase, peImageBase,
-                                sizeOfImage, sizeOfHeaders, hintBuf);
+                            /* Inferred relocations are an I386-only pass;
+                             * AMD64 images rebuild their .reloc table. */
+                            if (rd16(prepared + lfa + 24) == 0x10B &&
+                                rd16(prepared + lfa + 4) == 0x014C)
+                                pa30_transform_pointers(prepared, sourceLen, rt, rn,
+                                    oldBase, peImageBase,
+                                    sizeOfImage, sizeOfHeaders, hintBuf);
                             PHASE("nat-pointers");
                             if (getenv("PA30_DEBUG")) fprintf(stderr, "SEED amd64 rip\n");
                             if (pa30_is_x64_image(prepared, sourceLen))
@@ -6475,6 +6507,7 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
                                 {
                                     pa30_mark_nonexe(prepared, sourceLen, x64Hint);
                                     pa30_mark_data_dirs(prepared, sourceLen, x64Hint);
+                                    pa30_reloc_mask(prepared, sourceLen, x64Hint);
                                     pa30_transform_amd64_rip(prepared, sourceLen, rt, rn,
                                                              sizeOfImage, x64Hint);
                                     free(x64Hint);

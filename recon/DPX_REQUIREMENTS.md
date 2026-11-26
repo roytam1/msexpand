@@ -2661,6 +2661,24 @@ Phase D is the genuine open-ended piece.
       and KB2959977 513/513.  XPRESS, LZX, LZMS, PA19 and the ARM32 hint test
       pass.
 
+      **Relocation rebuild and x64 hint (part 103).**  KB5021653 and
+      KB5020447 still had verification failures after part 102.  The rebuilt
+      base relocation table stopped when a whole page of entries did not fit
+      the extent.  It now writes words until the extent is full, as the
+      independent decoder does.  Relocation fixups map wrapped 32-bit values
+      with unsigned arithmetic, and the x64 hint adds relocation marks.  The
+      x64 disassembler also stops at a handled byte inside an instruction, so
+      it no longer rewrites a rel32 that overlaps a DIR64 fixup.  Inferred
+      relocations are now limited to I386 PE32 images.
+
+      Results: KB5021653 1802/1811, KB5020447 3454/3485 and KB5028864 544/544.
+      NDP481 ARM64 stays at 2107/2124 and NDP481 x64 at 2723/2732; those
+      failures are present at the previous commit too.  KB4539601 3279/3279,
+      KB4536952 90/90, KB5022513 161/161, KB5022508 141/141, KB5012142
+      220/220, KB5020868 158/158, KB5064399 480/480, SSU 228/228, KB5131083
+      209/209 and KB2959977 513/513 are unchanged.  XPRESS, LZX, LZMS, PA19
+      and the ARM32 hint test pass.
+
       **ARM32 function-entry hint gate (part 101).**  KB5012142 ARM failed
       three managed targets and KB5020868 ARM one (`system.data.dll`), each
       with only a handful of bytes wrong inside Thumb BL encodings that the
