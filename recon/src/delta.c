@@ -4488,12 +4488,11 @@ static void pa30_mark_import_section(unsigned char *buf, unsigned long len)
         if (imp >= va && imp < va + (vs ? vs : rs))
         {
             ch = rd32(buf + o + 36);
-            if (rd16(buf + opt) != 0x20B)
             {
                 /* UnbindPortableExecutable makes a section literally named
-                 * ".idata" writable, but for a native CLR image whose imports
-                 * live at the end of .text the DLL removes the upstream
-                 * write bit instead. */
+                 * ".idata" writable, for PE32 and PE32+ images.  For a native
+                 * CLR PE32 image whose imports live at the end of .text the
+                 * DLL removes the upstream write bit instead. */
                 int idata =
                     (buf[o] | 0x20) == '.' &&
                     (buf[o + 1] | 0x20) == 'i' &&
@@ -4514,7 +4513,8 @@ static void pa30_mark_import_section(unsigned char *buf, unsigned long len)
                     (buf[o + 7] == 0 || buf[o + 7] == ' ');
                 if (idata && !(ch & 0x80000000UL))
                     ch |= 0x80000000UL;
-                else if (text && (ch & 0x80000000UL))
+                else if (rd16(buf + opt) != 0x20B && text &&
+                         (ch & 0x80000000UL))
                     ch &= ~0x80000000UL;
             }
             buf[o + 36] = (unsigned char)(ch & 0xFF);
@@ -4580,7 +4580,9 @@ static int pa30_import_name_valid(const unsigned char *buf, unsigned long len,
 }
 
 static void pa30_rewrite_imports(unsigned char *buf, unsigned long len,
-                                 const RIFTENTRY *rt, unsigned rn)
+                                 const RIFTENTRY *rt, unsigned rn,
+                                 unsigned __int64 oldBase,
+                                 unsigned __int64 newBase)
 {
     unsigned long pe, opt, imp, off, d;
     if (len < 0x40) return;
@@ -4600,9 +4602,6 @@ static void pa30_rewrite_imports(unsigned char *buf, unsigned long len,
         unsigned long stamp = rd32(buf + o + 4);
         unsigned long name = rd32(buf + o + 12);
         unsigned long ft = rd32(buf + o + 16);
-        unsigned long imageBase = rd32(buf + opt + 0x1C);
-        unsigned __int64 imageBase64 = (rd16(buf + opt) == 0x20B)
-                                     ? rd64(buf + opt + 0x18) : imageBase;
         unsigned long k;
         if (!oft && !name && !ft) break;
         if (oft) pa30_set_u32(buf, o, pa30_map_rva(rt, rn, (long)oft));
@@ -4630,20 +4629,23 @@ static void pa30_rewrite_imports(unsigned char *buf, unsigned long len,
                 if (!v && !hi) break;
                 if (k && stamp)
                 {
-                    /* Bound IAT: MapRva(value - ImageBase) + ImageBase. */
+                    /* Bound IAT: map(value - old ImageBase) + new ImageBase.
+                     * The image header already holds the target base here. */
                     if (width == 4)
                         pa30_set_u32(buf, at,
-                            pa30_map_rva(rt, rn, v - imageBase) + imageBase);
+                            pa30_map_rva(rt, rn,
+                                (long)(v - (unsigned long)oldBase)) +
+                            (unsigned long)newBase);
                     else
                     {
                         unsigned __int64 value = rd64(buf + at);
-                        unsigned long mapped = pa30_map_rva(rt, rn,
-                            (unsigned long)(value - imageBase64));
-                        pa30_set_u64(buf, at, imageBase64 + mapped);
+                        unsigned long mapped = pa30_map_rva_u32(rt, rn,
+                            (unsigned long)(value - oldBase));
+                        pa30_set_u64(buf, at, newBase + mapped);
                     }
                 }
                 else if (!(v & 0x80000000UL) && pa30_import_name_valid(buf, len, v))
-                    pa30_set_u32(buf, at, pa30_map_rva(rt, rn, (long)v));
+                    pa30_set_u32(buf, at, pa30_map_rva_u32(rt, rn, v));
             }
         }
     }
@@ -6413,7 +6415,8 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
                                     pa30_transform_rvas(prepared, sourceLen, rt, rn,
                                         sizeOfImage, sizeOfHeaders);
                                 else
-                                    pa30_rewrite_imports(prepared, sourceLen, rt, rn);
+                                    pa30_rewrite_imports(prepared, sourceLen, rt, rn,
+                                        oldBase, peImageBase);
                                 pa30_transform_exports(prepared, sourceLen, rt, rn);
                                 PHASE("cli-imports-exports");
                                 if (getenv("PA30_DEBUG")) fprintf(stderr, "SEED cli disasm\n");
@@ -6578,10 +6581,6 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
                             if (!getenv("PA30_NO_ARM64PORT"))
                                 pa30_transform_arm64(prepared, sourceLen, rt, rn);
                             PHASE("nat-pdata");
-                            if (getenv("PA30_DEBUG")) fprintf(stderr, "SEED relocs\n");
-                            pa30_transform_relocs(prepared, sourceLen, rt, rn,
-                                oldBase, peImageBase);
-                            PHASE("nat-relocs");
                             if (getenv("PA30_DEBUG")) fprintf(stderr, "SEED resources\n");
                             pa30_transform_resources(prepared, sourceLen,
                                                      rt, rn);
@@ -6595,8 +6594,14 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
                                     sizeOfImage, sizeOfHeaders);
                             else
                                 pa30_rewrite_imports(prepared, sourceLen,
-                                                     rt, rn);
+                                                     rt, rn, oldBase, peImageBase);
                             PHASE("nat-imports");
+                            /* The DLL runs relocations after imports, so the
+                             * import transform sees the original bound VAs. */
+                            if (getenv("PA30_DEBUG")) fprintf(stderr, "SEED relocs\n");
+                            pa30_transform_relocs(prepared, sourceLen, rt, rn,
+                                oldBase, peImageBase);
+                            PHASE("nat-relocs");
                             /* The DLL runs the relative-jump pass before the
                              * relative-call pass.  This matters when an E9
                              * opcode byte occurs inside an E8 call's rel32:

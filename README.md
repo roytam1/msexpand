@@ -90,8 +90,7 @@ needed; the CAB reader is compiled into the EXE.
   natively. KB5022513 ARM matches all 161 targets after the offset-rift
   composition was made dynamic, and KB4536952 IA64 matches all 90 targets.
   KB5012142 ARM matches 220/220, KB5020868 ARM 158/158, KB5028864 x64
-  544/544, KB5021653 x64 1802/1811 and KB5020447 x64 3454/3485.  The last
-  two packages still have open verification failures.
+  544/544, KB5021653 x64 1811/1811 and KB5020447 x64 3485/3485.
   Nested packages are walked through their
   packaging descriptors (`toc.xml`, `cabinet.cablist.ini`) so the payload
   CABs of Windows 10 LCUs are expanded too, without expanding the `.cab`

@@ -2694,3 +2694,15 @@ Phase D is the genuine open-ended piece.
       KB5064399 480/480, SSU 228/228, NDP481 ARM64 2124/2124, NDP481 x64
       2732/2732, KB5131083 209/209 and KB2959977 513/513.  XPRESS, LZX,
       LZMS, PA19 and the ARM32 hint test pass.
+
+      **Import write bit and transform order (part 104).**  The last failures
+      in KB5021653 and KB5020447 came from two details.  Native left the
+      writable bit clear on `.idata` for PE32+ images.  It also ran relocations
+      before the import pass, so bound IAT entries were already rebased when
+      the import pass tested them as import names.  Native now sets the write
+      bit for both PE32 and PE32+ images, and runs relocations after imports.
+
+      Both packages are now fully byte-exact: KB5021653 1811/1811 and
+      KB5020447 3485/3485.  KB5028864 stays at 544/544.  NDP481 ARM64 and x64
+      stay at 2107/2124 and 2723/2732; those failures predate this change.
+      All other baselines and the unit tests pass.
