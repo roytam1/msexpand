@@ -2706,3 +2706,12 @@ Phase D is the genuine open-ended piece.
       KB5020447 3485/3485.  KB5028864 stays at 544/544.  NDP481 ARM64 and x64
       stay at 2107/2124 and 2723/2732; those failures predate this change.
       All other baselines and the unit tests pass.
+
+      **CLI AMD64 hint (part 105).**  NDP481 ARM64 failed 17 managed deltas.
+      The CLI branch passed the shared hint, which has bit 1 set on every byte,
+      to the AMD64 disassembler.  The interior-byte check then skipped every
+      instruction and left RIP-relative operands unchanged.  The CLI branch
+      now uses the same dedicated hint as the native branch: MarkNonExe, data
+      directories and relocation sites.  NDP481 ARM64 reaches 2124/2124, and
+      NDP481 x64 improves from 2723 to 2728 of 2732.  All other baselines and
+      the unit tests remain unchanged.

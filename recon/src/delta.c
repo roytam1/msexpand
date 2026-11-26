@@ -6439,8 +6439,20 @@ int DeltaApply(const unsigned char *delta, unsigned long deltaLen,
                                 if (h.code == 8 &&
                                     pa30_is_x64_image(prepared, sourceLen))
                                 {
-                                    pa30_transform_amd64_rip(prepared, sourceLen,
-                                        rt, rn, sizeOfImage, hintBuf);
+                                    unsigned char *x64Hint =
+                                        (unsigned char *)calloc((size_t)sourceLen, 1);
+                                    if (x64Hint)
+                                    {
+                                        pa30_mark_nonexe(prepared, sourceLen, x64Hint);
+                                        pa30_mark_data_dirs(prepared, sourceLen, x64Hint);
+                                        pa30_reloc_mask(prepared, sourceLen, x64Hint);
+                                        pa30_transform_amd64_rip(prepared, sourceLen,
+                                            rt, rn, sizeOfImage, x64Hint);
+                                        free(x64Hint);
+                                    }
+                                    else
+                                        pa30_transform_amd64_rip(prepared, sourceLen,
+                                            rt, rn, sizeOfImage, hintBuf);
                                     pa30_transform_pdata_amd64(prepared, sourceLen,
                                         rt, rn, sizeOfImage);
                                 }
